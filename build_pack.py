@@ -70,6 +70,7 @@ DEFAULT_IGNORE_PATTERNS = {
     "cwplugin.local.json",
     # 本插件打包流程的临时产物
     "_preflight_libs", "_preflight.log", "_pack.log", "_pack2.log", "*.log",
+    "_build_pack.log",
 }
 
 # 发布包内必须存在的依赖（前缀匹配）

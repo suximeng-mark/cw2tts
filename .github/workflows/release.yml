@@ -60,15 +60,15 @@ jobs:
       - name: Build plugin packages
         shell: pwsh
         run: |
-          foreach ($p in @("_preflight_libs", "_preflight.log", "_pack.log", "_pack2.log")) {
+          # 清理任何残留（_build_pack.log 也必须在清理列表内，
+          # 否则会被 copy_source 打进发布包）
+          foreach ($p in @("_preflight_libs", "_preflight.log", "_pack.log",
+                            "_pack2.log", "_build_pack.log")) {
             if (Test-Path $p) { Remove-Item -Recurse -Force $p }
           }
-          # 用仓库自带的 build_pack.py 而非 cw-plugin-pack：
-          # 官方打包器在 Windows runner 上打包失败。build_pack.py 复刻其行为，
-          # 并把失败原因（完整 traceback）写入 BUILD_PACK_LOG，
-          # 随后的 artifact 上传步骤可匿名下载取证。
           $env:BUILD_PACK_LOG = "$PWD\_build_pack.log"
-          $env:GITHUB_STEP_SUMMARY = "$env:GITHUB_STEP_SUMMARY"
+          python --version
+          python -c "import sys, zipfile, tempfile; print('python ok', sys.version)"
           python build_pack.py 2>&1 | Out-File -FilePath ./_pack.log -Encoding utf8
           $c1 = $LASTEXITCODE
           if ($c1 -eq 0) {
