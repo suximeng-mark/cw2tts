@@ -138,11 +138,22 @@ PluginPage {
                 id: engineCombo
                 width: 180
                 model: {
+                    let labels = {
+                        "auto": qsTr("自动（推荐）"),
+                        "piper": qsTr("Piper 本地离线"),
+                        "edge": qsTr("EdgeTTS 在线"),
+                        "winrt": qsTr("Windows 系统语音"),
+                        "pyttsx3": qsTr("pyttsx3 兜底")
+                    }
                     let names = []
                     for (let i = 0; i < engineModel.length; i++) {
                         let e = engineModel[i]
-                        let suffix = e.available === "true" ? "" : qsTr(" (不可用)")
-                        names.push(e.name + suffix)
+                        let base = labels[e.name] || e.name
+                        // 未随包分发的依赖会显示为「未安装」，与「不可用」区分开
+                        let suffix = e.available === "true"
+                            ? ""
+                            : (e.name === "pyttsx3" ? qsTr(" (未安装)") : qsTr(" (不可用)"))
+                        names.push(base + suffix)
                     }
                     return names
                 }

@@ -63,12 +63,17 @@
 
 本插件的依赖**已随安装包一起分发**，安装后无需额外 `pip install`：
 
-| 依赖 | 用途 |
-| --- | --- |
-| `onnxruntime` | Piper 离线语音推理 |
-| `edge-tts` | 在线神经语音 |
-| `pyttsx3` | 跨平台离线兜底 |
-| `winrt-*` | Windows 系统语音 |
+| 依赖 | 用途 | 状态 |
+| --- | --- | --- |
+| `onnxruntime` | Piper 离线语音推理 | 已内置 |
+| `edge-tts` | 在线神经语音 | 已内置 |
+| `winrt-*` | Windows 系统语音 | 已内置 |
+| `pyttsx3` | 跨平台离线兜底 | 需手动安装 |
+
+> `pyttsx3` 在 Windows 上需拉入 `comtypes` / `pywin32` 并本地构建，
+> 会显著拖慢打包且容易失败，因此未内置（Windows 语音已由 `winrt` 覆盖）。
+> 非 Windows 平台如需该兜底，可手动 `pip install pyttsx3`。
+> 设置页会将其标注为「未安装」。
 
 > 唯一需要单独下载的是 Piper 语音模型（约 100MB），在设置页点「下载」即可，
 > 之后完全离线可用。

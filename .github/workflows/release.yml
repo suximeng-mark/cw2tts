@@ -46,8 +46,8 @@ jobs:
           required = {
               "onnxruntime": "libs/onnxruntime/capi/",
               "edge_tts": "libs/edge_tts/__init__.py",
-              "pyttsx3": "libs/pyttsx3/__init__.py",
               "winrt": "libs/winrt/",
+              "class-widgets-sdk": "libs/ClassWidgets/",
           }
           missing = [k for k, v in required.items() if not any(n.startswith(v) for n in names)]
           if missing:
