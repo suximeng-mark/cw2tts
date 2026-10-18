@@ -203,24 +203,28 @@ def main() -> int:
     args = parser.parse_args()
 
     source_dir = Path(args.plugin_dir).resolve()
-    print("Class Widgets Plugin Packager (bundled build)")
-    print("-" * 42)
+    report("Class Widgets Plugin Packager (bundled build)")
+    report("-" * 42)
     info("源目录", str(source_dir))
     info("输出格式", args.format)
 
+    def fail(message: str) -> int:
+        """输出错误并返回失败码，同时以 GitHub 注解形式暴露（可匿名读取）。"""
+        report(f"❌ {message}")
+        esc = message.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+        print(f"::error title=build_pack failed::{esc}")
+        return 1
+
     manifest_path = source_dir / "cwplugin.json"
     if not manifest_path.exists():
-        print("❌ 未找到 cwplugin.json，请在插件目录下运行此命令。", file=sys.stderr)
-        return 1
+        return fail("未找到 cwplugin.json，请在插件目录下运行此命令。")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     for field in ("id", "name", "version", "entry"):
         if field not in manifest:
-            print(f"❌ 清单缺少 '{field}'", file=sys.stderr)
-            return 1
+            return fail(f"清单缺少 '{field}'")
     entry_file = source_dir / manifest["entry"]
     if not entry_file.exists():
-        print(f"❌ 入口文件不存在: {entry_file.name}", file=sys.stderr)
-        return 1
+        return fail(f"入口文件不存在: {entry_file.name}")
 
     plugin_id = manifest["id"]
     suffix = f".{args.format}"
@@ -240,8 +244,8 @@ def main() -> int:
 
     verify_package(output_path)
 
-    print()
-    print("✅ 打包完成!")
+    report("")
+    report("✅ 打包完成!")
     info("文件", str(output_path))
     info("大小", f"{output_path.stat().st_size / 1024 / 1024:.2f} MB")
     return 0
@@ -253,6 +257,11 @@ if __name__ == "__main__":
     except SystemExit:
         raise
     except BaseException:  # noqa: BLE001 - 顶层兜底，把真实原因写进步骤摘要
-        report_block("打包失败（完整错误）", traceback.format_exc())
+        tb = traceback.format_exc()
+        report_block("打包失败（完整错误）", tb)
         traceback.print_exc()
+        # 同时以 GitHub 注解形式输出：注解可通过 check-runs API 匿名读取，
+        # 而 runs/{id}/logs 与 artifact 下载均需认证，便于无 token 时定位问题。
+        esc = tb.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+        print(f"::error title=build_pack failed::{esc}")
         sys.exit(1)
