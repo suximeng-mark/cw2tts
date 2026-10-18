@@ -1,0 +1,12 @@
+{
+  "id": "com.su.tts",
+  "name": "TTS 自动播报器",
+  "version": "1.0.0",
+  "api_version": ">=0.3.2",
+  "entry": "main.py",
+  "author": "suximeng-mark",
+  "description": "监听课表通知并自动语音播报，支持 EdgeTTS / WinRT / pyttsx3 多引擎与离线兜底",
+  "url": "https://github.com/suximeng-mark/cw2tts",
+  "readme": "README.md",
+  "icon": "icon.png"
+}

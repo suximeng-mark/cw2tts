@@ -1,0 +1,27 @@
+[project]
+name = "com-su-tts"
+version = "1.0.0"
+description = "监听课表通知并自动语音播报"
+authors = [
+    { name = "suximeng-mark" },
+]
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "class-widgets-sdk",
+    "edge-tts",
+    "loguru",
+    "winrt-runtime; sys_platform == 'win32'",
+    "winrt-Windows.Foundation; sys_platform == 'win32'",
+    "winrt-Windows.Foundation.Collections; sys_platform == 'win32'",
+    "winrt-Windows.Media.SpeechSynthesis; sys_platform == 'win32'",
+    "winrt-Windows.Storage.Streams; sys_platform == 'win32'",
+    "pyttsx3; sys_platform == 'win32'",
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["engines*", "qml*"]
