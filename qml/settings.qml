@@ -25,6 +25,9 @@ PluginPage {
     property string currentEngine: ""
     property string currentVoice: ""
     property real currentVolume: 1.0
+    property real currentRate: 1.0
+    property bool speakerEnabled: true
+    property string customTestText: ""
     property string activeEngine: ""
     property bool ready: false
 
@@ -71,6 +74,8 @@ PluginPage {
         currentEngine = backend.getCurrentEngine()
         currentVoice = backend.getCurrentVoice()
         currentVolume = backend.getVolume()
+        currentRate = backend.getRate()
+        speakerEnabled = backend.isEnabled()
         activeEngine = backend.getActiveEngineName()
         backend.refreshVoiceList()
         refreshPiperState()
@@ -99,6 +104,8 @@ PluginPage {
         function onConfigChanged() {
             currentVoice = backend.getCurrentVoice()
             currentVolume = backend.getVolume()
+            currentRate = backend.getRate()
+            speakerEnabled = backend.isEnabled()
         }
         function onModelProgressChanged(fileName, percent) {
             if (percent >= 100) {
@@ -111,6 +118,37 @@ PluginPage {
             piperDownloading = true
             piperPercent = percent
             piperFileName = fileName
+        }
+    }
+
+    // ═══════════════════════════════════════════
+    // 总开关
+    // ═══════════════════════════════════════════
+    ColumnLayout {
+        Layout.fillWidth: true
+        spacing: 4
+
+        SettingCard {
+            Layout.fillWidth: true
+            icon.name: speakerEnabled
+                ? "ic_fluent_speaker_2_20_regular"
+                : "ic_fluent_speaker_mute_20_regular"
+            title: qsTr("自动播报")
+            description: speakerEnabled
+                ? (activeEngine !== "none"
+                    ? qsTr("已开启 · 当前引擎 %1").arg(activeEngine)
+                    : qsTr("已开启，但暂无可用引擎"))
+                : qsTr("已关闭，收到通知时不会朗读")
+
+            Switch {
+                id: enableSwitch
+                checked: speakerEnabled
+                onToggled: {
+                    if (!ready) return
+                    speakerEnabled = checked
+                    backend.setEnabled(checked)
+                }
+            }
         }
     }
 
@@ -352,8 +390,55 @@ PluginPage {
                 Button {
                     text: qsTr("测试")
                     icon.name: "ic_fluent_play_20_regular"
-                    onClicked: backend.testSpeak("同学们好，现在开始上课。")
+                    onClicked: {
+                        let text = customTestText.trim()
+                        if (!text)
+                            text = qsTr("同学们好，现在开始上课。")
+                        backend.testSpeak(text)
+                    }
                 }
+            }
+
+            SettingItem {
+                title: qsTr("自定义测试文本")
+                description: qsTr("留空则使用默认测试语句")
+
+                contentItem: TextField {
+                    id: testTextField
+                    Layout.fillWidth: true
+                    placeholderText: qsTr("同学们好，现在开始上课。")
+                    text: root.customTestText
+                    onTextChanged: root.customTestText = text
+                }
+            }
+        }
+
+        SettingExpander {
+            Layout.fillWidth: true
+            icon.name: "ic_fluent_rocket_20_regular"
+            title: qsTr("语速")
+            description: {
+                let pct = Math.round(currentRate * 100)
+                if (Math.abs(currentRate - 1.0) < 0.01)
+                    return qsTr("正常（%1%）").arg(pct)
+                return currentRate > 1.0
+                    ? qsTr("偏快（%1%）").arg(pct)
+                    : qsTr("偏慢（%1%）").arg(pct)
+            }
+
+            action: Slider {
+                id: rateSlider
+                width: 150
+                from: 0.5
+                to: 2.0
+                stepSize: 0.1
+                value: currentRate
+                onMoved: { if (backend) backend.setRate(value) }
+            }
+
+            SettingItem {
+                title: qsTr("语速说明")
+                description: qsTr("1.0 为正常语速，数值越大越快。仅 Piper 本地引擎支持调速，在线与系统语音保持原速。")
             }
         }
     }

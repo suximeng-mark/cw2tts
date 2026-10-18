@@ -64,9 +64,16 @@ class PiperEngine(TTSEngine):
         self._config: dict = {}
         self._model_path: Optional[Path] = None
         self._load_lock = threading.Lock()
+        # 语速倍率：1.0 为正常。映射到模型的 length_scale（越大越慢）。
+        self._rate = 1.0
         logger.debug("[TTS.Piper] 初始化, voice={}", self._voice_id)
 
     BUILTIN_DEFAULT = "zh_CN-huayan-medium"
+
+    def set_rate(self, rate: float) -> None:
+        """设置语速倍率（0.5 ~ 2.0，1.0 为正常）。"""
+        self._rate = max(0.5, min(2.0, float(rate)))
+        logger.debug("[TTS.Piper] 语速倍率设为 {}", self._rate)
 
     # ---------------------------------------------------------------- 路径
 
@@ -334,11 +341,13 @@ class PiperEngine(TTSEngine):
 
         inputs = self._model.get_inputs()
         feed = {inputs[0].name: ids}
-        # 部分模型带 input_lengths / 输入长度
-        lengths = self._config.get("inference", {})
-        noise = lengths.get("noise_scale", 0.667)
-        length_scale = lengths.get("length_scale", 1.0)
-        noise_w = lengths.get("noise_w", 0.8)
+        # 部分模型带 input_lengths / scales 输入
+        conf = self._config.get("inference", {})
+        noise = conf.get("noise_scale", 0.667)
+        noise_w = conf.get("noise_w", 0.8)
+        # length_scale 越大语速越慢，与用户设置的 rate 方向相反，取倒数换算
+        base_length_scale = conf.get("length_scale", 1.0)
+        length_scale = base_length_scale / self._rate
         for meta in inputs:
             if meta.name == "input_lengths":
                 feed[meta.name] = np.array([ids.shape[1]], dtype=np.int64)

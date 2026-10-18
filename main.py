@@ -236,6 +236,38 @@ class Plugin(CW2Plugin):
             self._speaker.volume = volume
         self.configChanged.emit()
 
+    # ---- 总开关 / 语速 -----------------------------------------------------
+
+    @Slot(result=bool)
+    def isEnabled(self) -> bool:
+        return bool(self._config.enabled)
+
+    @Slot(bool)
+    def setEnabled(self, enabled: bool) -> None:
+        logger.info("[TTS] 总开关: {}", enabled)
+        self._config.enabled = bool(enabled)
+        self._save_config()
+        self.configChanged.emit()
+
+    @Slot(result=float)
+    def getRate(self) -> float:
+        return float(self._config.rate)
+
+    @Slot(float)
+    def setRate(self, rate: float) -> None:
+        rate = max(0.5, min(2.0, float(rate)))
+        self._config.rate = rate
+        self._save_config()
+        # Piper 支持 length_scale 调速；其余引擎暂按 1.0 处理
+        if self._speaker and self._speaker.engine_name == "piper":
+            engine = getattr(self._speaker, "engine", None)
+            if engine is not None and hasattr(engine, "set_rate"):
+                try:
+                    engine.set_rate(rate)
+                except Exception as e:
+                    logger.debug("[TTS] 设置 Piper 语速失败: {}", e)
+        self.configChanged.emit()
+
     @Slot(result=list)
     def getTemplateKeys(self) -> list:
         return list(DEFAULT_TEMPLATES.keys())
@@ -401,6 +433,9 @@ class Plugin(CW2Plugin):
         )
         if self._speaker is None:
             logger.warning("[TTS] Speaker 为 None, 跳过朗读")
+            return
+        if not self._config.enabled:
+            logger.debug("[TTS] 总开关已关闭, 跳过朗读")
             return
         if payload.get("silent", False):
             logger.debug("[TTS] 通知标记为 silent, 跳过朗读")

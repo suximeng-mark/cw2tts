@@ -31,26 +31,40 @@ DEFAULT_TEMPLATES: Dict[str, str] = {
 class TTSPluginConfig(ConfigBaseModel):
     """TTS 插件配置。
 
-    :param engine: TTS 引擎名称，可选值: auto / edge / winrt / pyttsx3
+    :param enabled: 总开关，关闭后不再自动播报（仍可在设置页手动试听）
+    :param engine: TTS 引擎名称，可选值: auto / piper / edge / winrt / pyttsx3
     :param voice: 语音名称，空字符串表示使用引擎默认语音
     :param volume: 播放音量 0.0 ~ 1.0
+    :param rate: 语速倍率，1.0 为正常，0.5~2.0
     :param templates: 各 activity 类型的朗读文案模板
     """
 
+    enabled: bool = True
     engine: str = "auto"
     voice: str = ""
     volume: float = 1.0
+    rate: float = 1.0
     templates: Dict[str, str] = Field(default_factory=dict)
 
     def __init__(self, **data):
+        # 与官方模板及广场参考插件一致的写法（均在 Class Widgets 2 内实机运行过）
         super().__init__(**data)
-        # 确保所有默认模板都存在
+        # 防御：历史配置可能缺字段或类型异常，确保拿到真实 dict
+        if not isinstance(self.templates, dict):
+            self.templates = {}
         for key, default_text in DEFAULT_TEMPLATES.items():
             if key not in self.templates:
                 self.templates[key] = default_text
+        # 语速限幅，避免异常值导致引擎报错
+        try:
+            self.rate = max(0.5, min(2.0, float(self.rate)))
+        except (TypeError, ValueError):
+            self.rate = 1.0
         logger.debug(
-            "[TTS.Config] 创建, engine={}, voice={}, volume={}",
+            "[TTS.Config] 创建, enabled={}, engine={}, voice={}, volume={}, rate={}",
+            self.enabled,
             self.engine,
             self.voice,
             self.volume,
+            self.rate,
         )
