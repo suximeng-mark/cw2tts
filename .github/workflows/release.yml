@@ -63,13 +63,15 @@ jobs:
           }
           $env:BUILD_PACK_LOG = "$PWD\_build_pack.log"
           "sentinel: cwd=$(Get-Location)" | Out-File -FilePath ./_build_pack.log -Encoding utf8
-          # 日志与摘要全部由 build_pack.py 自身写入（Python 写文件，
-          # 不经过 PowerShell 管道，避免编码与退出码问题）
-          # stderr 同时重定向到 _pack.log，便于随 artifact 取证
-          python build_pack.py 2>&1 | Out-File -FilePath ./_pack.log -Encoding utf8
+          # 必须用 Tee-Object 而不是 Out-File：
+          # Out-File 会把 stdout 重定向到文件，Python 输出的 GitHub 工作流命令
+          # （::error::）被一并吞掉，GitHub 看不到注解，
+          # 日志也就无法经 check-runs API 匿名读取，排查时完全看不到原因。
+          # Tee-Object 同时送往控制台与文件，且保留原生命令退出码。
+          python build_pack.py 2>&1 | Tee-Object -FilePath ./_pack.log
           $c1 = $LASTEXITCODE
           if ($c1 -eq 0) {
-            python build_pack.py --format zip 2>&1 | Out-File -FilePath ./_pack2.log -Encoding utf8
+            python build_pack.py --format zip 2>&1 | Tee-Object -FilePath ./_pack2.log
             $c1 = $LASTEXITCODE
           }
           "exit=$c1" | Out-File -FilePath ./_build_pack.log -Append -Encoding utf8
