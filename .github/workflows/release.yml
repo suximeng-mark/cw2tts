@@ -37,6 +37,8 @@ jobs:
         run: |
           # 预演 cw-plugin-pack 内部的 pip install --target，
           # 失败时把完整输出写进构建摘要，便于排查（本机无 gh CLI，日志 API 需认证）
+          # 注意：cw-plugin-pack 不读 .gitignore，预演目录必须在此显式删除，
+          # 否则会被打进发布包。
           python -m pip install `
             "class-widgets-sdk" "edge-tts" "loguru" "onnxruntime" "pypinyin" `
             "winrt-runtime" "winrt-Windows.Foundation" `
@@ -49,13 +51,19 @@ jobs:
           $code = $LASTEXITCODE
           "### Preflight exit code: $code" >> $env:GITHUB_STEP_SUMMARY
           Get-Content ./_preflight.log -Tail 60 >> $env:GITHUB_STEP_SUMMARY
+          if (Test-Path ./_preflight_libs) {
+            Remove-Item -Recurse -Force ./_preflight_libs
+          }
           if ($code -ne 0) { exit $code }
-          Remove-Item -Recurse -Force ./_preflight_libs
 
       - name: Build plugin packages
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
+          # 清理任何诊断残留，避免混入发布包
+          foreach ($p in @("_preflight_libs", "_preflight.log", "_pack.log", "_pack2.log")) {
+            if (Test-Path $p) { Remove-Item -Recurse -Force $p }
+          }
           cw-plugin-pack 2>&1 | Tee-Object -FilePath ./_pack.log
           $c1 = $LASTEXITCODE
           if ($c1 -eq 0) {

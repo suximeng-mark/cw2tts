@@ -19,3 +19,8 @@ venv/
 
 # CI 生成物
 CHANGELOG.md
+
+# CI 预演/日志（不要打进发布包）
+_preflight_libs/
+*.log
+.*.log
