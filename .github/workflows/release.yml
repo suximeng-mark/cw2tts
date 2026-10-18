@@ -35,8 +35,8 @@ jobs:
       - name: Preflight dependency install (诊断)
         shell: pwsh
         run: |
-          # 直接调用 pip，不经 PowerShell 管道：管道会覆盖 $LASTEXITCODE，
-          # 把真实失败伪装成成功。日志由 Python 侧写，此处只负责退出码。
+          # 原生命令的 stderr 在 ErrorActionPreference='Stop' 下会中断步骤
+          $ErrorActionPreference = 'Continue'
           python -m pip install --target ./_preflight_libs `
             class-widgets-sdk edge-tts loguru onnxruntime pypinyin `
             winrt-runtime winrt-Windows.Foundation `
@@ -44,31 +44,36 @@ jobs:
             winrt-Windows.Media.SpeechSynthesis `
             winrt-Windows.Storage.Streams `
             --no-python-version-warning --disable-pip-version-check --quiet
-          if ($LASTEXITCODE -ne 0) {
-            Remove-Item -Recurse -Force ./_preflight_libs -ErrorAction SilentlyContinue
-            exit $LASTEXITCODE
+          $code = $LASTEXITCODE
+          if (Test-Path ./_preflight_libs) {
+            Remove-Item -Recurse -Force ./_preflight_libs
           }
-          Remove-Item -Recurse -Force ./_preflight_libs
+          if ($code -ne 0) { exit $code }
 
       - name: Build plugin packages
         shell: pwsh
         run: |
-          # 清理任何残留（_build_pack.log 必须在列表内，否则会被 copy_source 打进包）
+          # GitHub 的 pwsh 默认 $ErrorActionPreference='Stop'：
+          # 原生命令往 stderr 写任何内容都会抛 NativeCommandError 并中断步骤，
+          # 必须显式改为 Continue，否则会在脚本启动前就失败。
+          $ErrorActionPreference = 'Continue'
           foreach ($p in @("_preflight_libs", "_preflight.log", "_pack.log",
                             "_pack2.log", "_build_pack.log")) {
             if (Test-Path $p) { Remove-Item -Recurse -Force $p }
           }
-          # 先落一个哨兵文件：若最终 artifact 里看不到它，说明脚本根本没启动
-          "sentinel" | Out-File -FilePath ./_build_pack.log -Encoding utf8
-          "cwd=$(Get-Location) py=$(python --version 2>&1)" | Out-File -FilePath ./_build_pack.log -Append -Encoding utf8
-
           $env:BUILD_PACK_LOG = "$PWD\_build_pack.log"
+          "sentinel: cwd=$(Get-Location)" | Out-File -FilePath ./_build_pack.log -Encoding utf8
           # 日志与摘要全部由 build_pack.py 自身写入（Python 写文件，
           # 不经过 PowerShell 管道，避免编码与退出码问题）
-          python build_pack.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python build_pack.py --format zip
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # stderr 同时重定向到 _pack.log，便于随 artifact 取证
+          python build_pack.py 2>&1 | Out-File -FilePath ./_pack.log -Encoding utf8
+          $c1 = $LASTEXITCODE
+          if ($c1 -eq 0) {
+            python build_pack.py --format zip 2>&1 | Out-File -FilePath ./_pack2.log -Encoding utf8
+            $c1 = $LASTEXITCODE
+          }
+          "exit=$c1" | Out-File -FilePath ./_build_pack.log -Append -Encoding utf8
+          if ($c1 -ne 0) { exit $c1 }
 
       - name: Upload build log (always)
         if: always()
@@ -77,6 +82,8 @@ jobs:
           name: build-log
           path: |
             _build_pack.log
+            _pack.log
+            _pack2.log
             _preflight.log
           retention-days: 7
 
