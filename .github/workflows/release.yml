@@ -65,7 +65,10 @@ jobs:
           }
           # 用仓库自带的 build_pack.py 而非 cw-plugin-pack：
           # 官方打包器在 Windows runner 上打包失败。build_pack.py 复刻其行为，
-          # 并把失败原因（完整 traceback）写入 GITHUB_STEP_SUMMARY。
+          # 并把失败原因（完整 traceback）写入 BUILD_PACK_LOG，
+          # 随后的 artifact 上传步骤可匿名下载取证。
+          $env:BUILD_PACK_LOG = "$PWD\_build_pack.log"
+          $env:GITHUB_STEP_SUMMARY = "$env:GITHUB_STEP_SUMMARY"
           python build_pack.py 2>&1 | Out-File -FilePath ./_pack.log -Encoding utf8
           $c1 = $LASTEXITCODE
           if ($c1 -eq 0) {
@@ -79,7 +82,22 @@ jobs:
           Get-Content ./_pack2.log -Tail 50 -Encoding utf8 -ErrorAction SilentlyContinue |
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value '```'
-          if ($c1 -ne 0) { exit $c1 }
+
+      - name: Upload build log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: |
+            _build_pack.log
+            _pack.log
+            _pack2.log
+            _preflight.log
+          retention-days: 7
+
+      - name: Fail if packaging failed
+        if: failure()
+        run: exit 1
 
       - name: Get version from tag
         id: get_version

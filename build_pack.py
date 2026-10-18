@@ -38,14 +38,18 @@ from pathlib import Path
 
 # CI 步骤摘要路径：把失败原因写进去，避免只能靠受限的日志 API 排查
 SUMMARY_PATH = os.environ.get("GITHUB_STEP_SUMMARY")
+# CI 里同时写一份本地日志，便于作为 artifact 上传后取证
+LOG_PATH = os.environ.get("BUILD_PACK_LOG")
 
 
 def report(line: str) -> None:
-    """输出到 stdout，并在 CI 中同时写入步骤摘要。"""
+    """输出到 stdout，并在 CI 中同时写入步骤摘要与本地日志。"""
     print(line, flush=True)
-    if SUMMARY_PATH:
+    for path in (SUMMARY_PATH, LOG_PATH):
+        if not path:
+            continue
         try:
-            with open(SUMMARY_PATH, "a", encoding="utf-8") as f:
+            with open(path, "a", encoding="utf-8") as f:
                 f.write(line.rstrip() + "\n")
         except OSError:
             pass
@@ -53,6 +57,7 @@ def report(line: str) -> None:
 
 def report_block(title: str, body: str) -> None:
     report(f"\n### {title}\n```\n{body.rstrip()[-6000:]}\n```\n")
+
 
 # 与官方 SDK PluginPackager.DEFAULT_IGNORE_PATTERNS 保持一致
 DEFAULT_IGNORE_PATTERNS = {
