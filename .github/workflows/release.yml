@@ -7,7 +7,10 @@ on:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    # 目标平台是 Windows 课堂机，因此在 Windows runner 上打包：
+    # winrt-* / pyttsx3 只有 Windows 发行文件，Linux runner 装不到它们，
+    # 会导致发布包缺失对应引擎。
+    runs-on: windows-latest
     permissions:
       contents: write
     steps:
@@ -19,7 +22,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '>=3.9'
+          python-version: '3.12'
           cache: 'pip'
 
       - name: Install git-cliff
@@ -33,6 +36,25 @@ jobs:
         run: |
           cw-plugin-pack
           cw-plugin-pack --format zip
+
+      - name: Verify bundled dependencies
+        run: |
+          python - <<'PY'
+          import sys, zipfile
+          pkg = "com.su.tts.cwplugin"
+          names = set(zipfile.ZipFile(pkg).namelist())
+          required = {
+              "onnxruntime": "libs/onnxruntime/capi/",
+              "edge_tts": "libs/edge_tts/__init__.py",
+              "pyttsx3": "libs/pyttsx3/__init__.py",
+              "winrt": "libs/winrt/",
+          }
+          missing = [k for k, v in required.items() if not any(n.startswith(v) for n in names)]
+          if missing:
+              print("❌ 发布包缺少依赖: " + ", ".join(missing))
+              sys.exit(1)
+          print("✅ 依赖齐全:", ", ".join(required))
+          PY
 
       - name: Get version from tag
         id: get_version

@@ -48,6 +48,9 @@
 | `{next_teacher}` | 下一节教师 |
 | `{next_location}` | 下一节地点 |
 
+- 点击「快速插入变量」按钮可把变量插入到光标处，避免手打变量名出错。
+- 每个场景可随时「恢复默认」，也可「试听」当前模板效果。
+
 默认模板：
 
 - 上课：`上课了，{subject}`
@@ -56,11 +59,25 @@
 - 放学：`放学了`
 - 预备铃：`预备铃，下节课是{next_subject}`
 
+## 依赖说明
+
+本插件的依赖**已随安装包一起分发**，安装后无需额外 `pip install`：
+
+| 依赖 | 用途 |
+| --- | --- |
+| `onnxruntime` | Piper 离线语音推理 |
+| `edge-tts` | 在线神经语音 |
+| `pyttsx3` | 跨平台离线兜底 |
+| `winrt-*` | Windows 系统语音 |
+
+> 唯一需要单独下载的是 Piper 语音模型（约 100MB），在设置页点「下载」即可，
+> 之后完全离线可用。
+
 ## 安装
 
 1. 在 Class Widgets 2 的插件广场中搜索并安装本插件；或下载 `.cwplugin` 文件手动导入。
-2. 首次进入设置页会自动探测可用引擎。若要使用**离线朗读**，在「离线朗读模型」中点「下载」获取 Piper 模型。
-3. 若无可用引擎，请确认已安装对应依赖（`onnxruntime` / `edge-tts` / `winrt-*` / `pyttsx3`）。
+2. 依赖已内置于安装包，安装后无需额外配置 Python 环境。
+3. 首次进入设置页会自动探测可用引擎。若要使用**离线朗读**，在「离线朗读模型」中点「下载」获取 Piper 模型。
 
 ## 开发 / 打包 / 发布
 
@@ -75,7 +92,7 @@ cw-plugin-pack            # 生成 .cwplugin
 cw-plugin-pack --format zip
 
 # 4. 发布：打 tag vX.Y.Z 推送到 GitHub，release.yml 自动构建并发布
-git tag v1.0.1 && git push --tags
+git tag v1.0.2 && git push --tags
 ```
 
 ## 致谢

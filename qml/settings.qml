@@ -34,6 +34,10 @@ PluginPage {
     property int piperPercent: 0
     property string piperFileName: ""
 
+    // 「快速插入变量」作用的目标：最近展开/编辑的场景
+    property string activeTemplateKey: ""
+    property var activeTemplateField: null
+
     function refreshPiperState() {
         if (!backend) return
         piperState = backend.getPiperModelState()
@@ -363,6 +367,38 @@ PluginPage {
             Layout.fillWidth: true
         }
 
+        RowLayout {
+            spacing: 6
+            Text {
+                text: qsTr("快速插入变量:")
+                typography: Typography.Caption
+                color: Colors.proxy.textSecondaryColor
+            }
+            Repeater {
+                model: ["{subject}", "{teacher}", "{location}", "{next_subject}",
+                        "{next_teacher}", "{next_location}", "{title}", "{message}"]
+
+                Button {
+                    text: modelData
+                    flat: true
+                    implicitHeight: 24
+                    // 仅在用户已选中某个模板输入框时可点
+                    enabled: root.activeTemplateField !== null
+                    onClicked: {
+                        let field = activeTemplateField
+                        if (!field) return
+                        // 在光标处插入变量
+                        let t = field.text
+                        let pos = field.cursorPosition
+                        field.text = t.substring(0, pos) + modelData + t.substring(pos)
+                        field.cursorPosition = pos + modelData.length
+                        field.forceActiveFocus()
+                        backend.setTemplate(activeTemplateKey, field.text)
+                    }
+                }
+            }
+        }
+
         Repeater {
             model: backend ? backend.getTemplateKeys() : []
 
@@ -386,13 +422,28 @@ PluginPage {
 
                     RowLayout {
                         spacing: 8
+                        Layout.fillWidth: true
 
                         TextField {
                             id: templateField
-                            Layout.preferredWidth: 300
+                            Layout.fillWidth: true
+                            // 双向绑定：外部模板变化时刷新显示框，
+                            // 用户输入变化时立即写回，避免失焦前丢内容
                             text: backend.getTemplate(modelData)
                             placeholderText: backend.getDefaultTemplate(modelData)
-                            onEditingFinished: backend.setTemplate(modelData, text)
+                            onTextChanged: {
+                                if (text !== backend.getTemplate(modelData))
+                                    backend.setTemplate(modelData, text)
+                            }
+                            onActiveFocusChanged: {
+                                if (activeFocus) {
+                                    // 记录当前编辑目标，供「快速插入变量」使用
+                                    root.activeTemplateKey = modelData
+                                    root.activeTemplateField = templateField
+                                } else {
+                                    backend.setTemplate(modelData, text)
+                                }
+                            }
                         }
 
                         ToolButton {
