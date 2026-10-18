@@ -32,10 +32,40 @@ jobs:
         run: |
           pip install -e .
 
-      - name: Build plugin packages
+      - name: Preflight dependency install (诊断)
+        shell: pwsh
         run: |
-          cw-plugin-pack
-          cw-plugin-pack --format zip
+          # 预演 cw-plugin-pack 内部的 pip install --target，
+          # 失败时把完整输出写进构建摘要，便于排查（本机无 gh CLI，日志 API 需认证）
+          python -m pip install `
+            "class-widgets-sdk" "edge-tts" "loguru" "onnxruntime" "pypinyin" `
+            "winrt-runtime" "winrt-Windows.Foundation" `
+            "winrt-Windows.Foundation.Collections" `
+            "winrt-Windows.Media.SpeechSynthesis" `
+            "winrt-Windows.Storage.Streams" `
+            --target ./_preflight_libs `
+            --no-python-version-warning --disable-pip-version-check 2>&1 |
+            Tee-Object -FilePath ./_preflight.log
+          $code = $LASTEXITCODE
+          "### Preflight exit code: $code" >> $env:GITHUB_STEP_SUMMARY
+          Get-Content ./_preflight.log -Tail 60 >> $env:GITHUB_STEP_SUMMARY
+          if ($code -ne 0) { exit $code }
+          Remove-Item -Recurse -Force ./_preflight_libs
+
+      - name: Build plugin packages
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          cw-plugin-pack 2>&1 | Tee-Object -FilePath ./_pack.log
+          $c1 = $LASTEXITCODE
+          if ($c1 -eq 0) {
+            cw-plugin-pack --format zip 2>&1 | Tee-Object -FilePath ./_pack2.log
+            $c1 = $LASTEXITCODE
+          }
+          "### cw-plugin-pack exit code: $c1" >> $env:GITHUB_STEP_SUMMARY
+          Get-Content ./_pack.log -Tail 80 -ErrorAction SilentlyContinue >> $env:GITHUB_STEP_SUMMARY
+          Get-Content ./_pack2.log -Tail 40 -ErrorAction SilentlyContinue >> $env:GITHUB_STEP_SUMMARY
+          if ($c1 -ne 0) { exit $c1 }
 
       - name: Verify bundled dependencies
         run: |
