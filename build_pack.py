@@ -27,12 +27,32 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import traceback
 import zipfile
 from pathlib import Path
+
+# CI 步骤摘要路径：把失败原因写进去，避免只能靠受限的日志 API 排查
+SUMMARY_PATH = os.environ.get("GITHUB_STEP_SUMMARY")
+
+
+def report(line: str) -> None:
+    """输出到 stdout，并在 CI 中同时写入步骤摘要。"""
+    print(line, flush=True)
+    if SUMMARY_PATH:
+        try:
+            with open(SUMMARY_PATH, "a", encoding="utf-8") as f:
+                f.write(line.rstrip() + "\n")
+        except OSError:
+            pass
+
+
+def report_block(title: str, body: str) -> None:
+    report(f"\n### {title}\n```\n{body.rstrip()[-6000:]}\n```\n")
 
 # 与官方 SDK PluginPackager.DEFAULT_IGNORE_PATTERNS 保持一致
 DEFAULT_IGNORE_PATTERNS = {
@@ -58,11 +78,11 @@ REQUIRED_IN_PACKAGE = {
 
 
 def step(msg: str) -> None:
-    print(f"  ➜ {msg}", flush=True)
+    report(f"  ➜ {msg}")
 
 
 def info(key: str, value: str) -> None:
-    print(f"    {key:<20} {value}", flush=True)
+    report(f"    {key:<20} {value}")
 
 
 def resolve_dependencies(source_dir: Path) -> list[str]:
@@ -133,8 +153,7 @@ def install_dependencies(deps: list[str], lib_dir: Path) -> None:
     result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
                             errors="replace", timeout=1800)
     if result.returncode != 0:
-        print(result.stdout[-4000:], file=sys.stderr)
-        print(result.stderr[-4000:], file=sys.stderr)
+        report_block("pip install 失败（依赖安装）", result.stdout + "\n" + result.stderr)
         raise RuntimeError(f"pip install 失败，退出码 {result.returncode}")
 
     # 清理字节码，进一步缩小体积
@@ -166,7 +185,7 @@ def create_zip(build_dir: Path, output_path: Path) -> None:
         for i, path in enumerate(files, 1):
             zf.write(path, path.relative_to(build_dir))
             if i % 200 == 0:
-                print(f"      已压缩 {i}/{len(files)}", flush=True)
+                report(f"      已压缩 {i}/{len(files)}")
     info("条目数", str(len(files)))
 
 
@@ -223,4 +242,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except BaseException:  # noqa: BLE001 - 顶层兜底，把真实原因写进步骤摘要
+        report_block("打包失败（完整错误）", traceback.format_exc())
+        traceback.print_exc()
+        sys.exit(1)

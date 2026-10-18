@@ -35,10 +35,9 @@ jobs:
       - name: Preflight dependency install (诊断)
         shell: pwsh
         run: |
-          # 预演 cw-plugin-pack 内部的 pip install --target，
-          # 失败时把完整输出写进构建摘要，便于排查（本机无 gh CLI，日志 API 需认证）
-          # 注意：cw-plugin-pack 不读 .gitignore，预演目录必须在此显式删除，
-          # 否则会被打进发布包。
+          # 注意：不要用 `cmd 2>&1 | Tee-Object` —— 那样 $LASTEXITCODE
+          # 取的是 Tee-Object 的退出码(0)，会把 pip 的真实失败掩盖成 success。
+          # 这里用 `*>` 重定向，$LASTEXITCODE 才是 python 自己的。
           python -m pip install `
             "class-widgets-sdk" "edge-tts" "loguru" "onnxruntime" "pypinyin" `
             "winrt-runtime" "winrt-Windows.Foundation" `
@@ -46,11 +45,13 @@ jobs:
             "winrt-Windows.Media.SpeechSynthesis" `
             "winrt-Windows.Storage.Streams" `
             --target ./_preflight_libs `
-            --no-python-version-warning --disable-pip-version-check 2>&1 |
-            Tee-Object -FilePath ./_preflight.log
+            --no-python-version-warning --disable-pip-version-check `
+            --quiet *> ./_preflight.log
           $code = $LASTEXITCODE
-          "### Preflight exit code: $code" >> $env:GITHUB_STEP_SUMMARY
-          Get-Content ./_preflight.log -Tail 60 >> $env:GITHUB_STEP_SUMMARY
+          "### Preflight pip install exit code: $code" >> $env:GITHUB_STEP_SUMMARY
+          "```" >> $env:GITHUB_STEP_SUMMARY
+          Get-Content ./_preflight.log -Tail 80 >> $env:GITHUB_STEP_SUMMARY
+          "```" >> $env:GITHUB_STEP_SUMMARY
           if (Test-Path ./_preflight_libs) {
             Remove-Item -Recurse -Force ./_preflight_libs
           }
@@ -59,24 +60,23 @@ jobs:
       - name: Build plugin packages
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Continue"
-          # 清理任何诊断残留，避免混入发布包
           foreach ($p in @("_preflight_libs", "_preflight.log", "_pack.log", "_pack2.log")) {
             if (Test-Path $p) { Remove-Item -Recurse -Force $p }
           }
           # 用仓库自带的 build_pack.py 而非 cw-plugin-pack：
           # 官方打包器在 Windows runner 上打包失败（同一次运行中
-          # 独立的 pip install --target 预演成功，说明依赖可装、问题在打包器）。
-          # build_pack.py 复刻其行为，并改用 subprocess.run 避免管道死锁。
-          python build_pack.py 2>&1 | Tee-Object -FilePath ./_pack.log
+          # 独立的 pip install --target 预演同样失败，说明与依赖清单相关）。
+          python build_pack.py *> ./_pack.log
           $c1 = $LASTEXITCODE
           if ($c1 -eq 0) {
-            python build_pack.py --format zip 2>&1 | Tee-Object -FilePath ./_pack2.log
+            python build_pack.py --format zip *> ./_pack2.log
             $c1 = $LASTEXITCODE
           }
           "### 打包退出码: $c1" >> $env:GITHUB_STEP_SUMMARY
-          Get-Content ./_pack.log -Tail 100 -ErrorAction SilentlyContinue >> $env:GITHUB_STEP_SUMMARY
-          Get-Content ./_pack2.log -Tail 40 -ErrorAction SilentlyContinue >> $env:GITHUB_STEP_SUMMARY
+          "```" >> $env:GITHUB_STEP_SUMMARY
+          Get-Content ./_pack.log -Tail 120 >> $env:GITHUB_STEP_SUMMARY
+          Get-Content ./_pack2.log -Tail 60 >> $env:GITHUB_STEP_SUMMARY
+          "```" >> $env:GITHUB_STEP_SUMMARY
           if ($c1 -ne 0) { exit $c1 }
 
       - name: Get version from tag
