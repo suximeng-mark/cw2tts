@@ -58,6 +58,10 @@ jobs:
                             "_pack2.log", "_build_pack.log")) {
             if (Test-Path $p) { Remove-Item -Recurse -Force $p }
           }
+          # 先落一个哨兵文件：若最终 artifact 里看不到它，说明脚本根本没启动
+          "sentinel" | Out-File -FilePath ./_build_pack.log -Encoding utf8
+          "cwd=$(Get-Location) py=$(python --version 2>&1)" | Out-File -FilePath ./_build_pack.log -Append -Encoding utf8
+
           $env:BUILD_PACK_LOG = "$PWD\_build_pack.log"
           # 日志与摘要全部由 build_pack.py 自身写入（Python 写文件，
           # 不经过 PowerShell 管道，避免编码与退出码问题）
