@@ -35,23 +35,23 @@ jobs:
       - name: Preflight dependency install (诊断)
         shell: pwsh
         run: |
-          # 注意：不要用 `cmd 2>&1 | Tee-Object` —— 那样 $LASTEXITCODE
-          # 取的是 Tee-Object 的退出码(0)，会把 pip 的真实失败掩盖成 success。
-          # 这里用 `*>` 重定向，$LASTEXITCODE 才是 python 自己的。
-          python -m pip install `
-            "class-widgets-sdk" "edge-tts" "loguru" "onnxruntime" "pypinyin" `
-            "winrt-runtime" "winrt-Windows.Foundation" `
-            "winrt-Windows.Foundation.Collections" `
-            "winrt-Windows.Media.SpeechSynthesis" `
-            "winrt-Windows.Storage.Streams" `
-            --target ./_preflight_libs `
+          # 用 Out-File -Encoding utf8 而非 `*>`：后者在 Windows PowerShell 下
+          # 写 UTF-16，且日志编码不可控。
+          # 退出码直接取自 pip（不经管道，避免被管道末端命令覆盖）。
+          python -m pip install --target ./_preflight_libs `
+            class-widgets-sdk edge-tts loguru onnxruntime pypinyin `
+            winrt-runtime winrt-Windows.Foundation `
+            winrt-Windows.Foundation.Collections `
+            winrt-Windows.Media.SpeechSynthesis `
+            winrt-Windows.Storage.Streams `
             --no-python-version-warning --disable-pip-version-check `
-            --quiet *> ./_preflight.log
+            --quiet 2>&1 | Out-File -FilePath ./_preflight.log -Encoding utf8
           $code = $LASTEXITCODE
-          "### Preflight pip install exit code: $code" >> $env:GITHUB_STEP_SUMMARY
-          "```" >> $env:GITHUB_STEP_SUMMARY
-          Get-Content ./_preflight.log -Tail 80 >> $env:GITHUB_STEP_SUMMARY
-          "```" >> $env:GITHUB_STEP_SUMMARY
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value "### Preflight pip exit code: $code"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value '```'
+          Get-Content ./_preflight.log -Tail 60 -Encoding utf8 |
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value '```'
           if (Test-Path ./_preflight_libs) {
             Remove-Item -Recurse -Force ./_preflight_libs
           }
@@ -64,19 +64,21 @@ jobs:
             if (Test-Path $p) { Remove-Item -Recurse -Force $p }
           }
           # 用仓库自带的 build_pack.py 而非 cw-plugin-pack：
-          # 官方打包器在 Windows runner 上打包失败（同一次运行中
-          # 独立的 pip install --target 预演同样失败，说明与依赖清单相关）。
-          python build_pack.py *> ./_pack.log
+          # 官方打包器在 Windows runner 上打包失败。build_pack.py 复刻其行为，
+          # 并把失败原因（完整 traceback）写入 GITHUB_STEP_SUMMARY。
+          python build_pack.py 2>&1 | Out-File -FilePath ./_pack.log -Encoding utf8
           $c1 = $LASTEXITCODE
           if ($c1 -eq 0) {
-            python build_pack.py --format zip *> ./_pack2.log
+            python build_pack.py --format zip 2>&1 | Out-File -FilePath ./_pack2.log -Encoding utf8
             $c1 = $LASTEXITCODE
           }
-          "### 打包退出码: $c1" >> $env:GITHUB_STEP_SUMMARY
-          "```" >> $env:GITHUB_STEP_SUMMARY
-          Get-Content ./_pack.log -Tail 120 >> $env:GITHUB_STEP_SUMMARY
-          Get-Content ./_pack2.log -Tail 60 >> $env:GITHUB_STEP_SUMMARY
-          "```" >> $env:GITHUB_STEP_SUMMARY
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value "### 打包退出码: $c1"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value '```'
+          Get-Content ./_pack.log -Tail 100 -Encoding utf8 |
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          Get-Content ./_pack2.log -Tail 50 -Encoding utf8 -ErrorAction SilentlyContinue |
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value '```'
           if ($c1 -ne 0) { exit $c1 }
 
       - name: Get version from tag
