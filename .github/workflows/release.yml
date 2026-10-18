@@ -8,8 +8,8 @@ on:
 jobs:
   release:
     # 目标平台是 Windows 课堂机，因此在 Windows runner 上打包：
-    # winrt-* / pyttsx3 只有 Windows 发行文件，Linux runner 装不到它们，
-    # 会导致发布包缺失对应引擎。
+    # winrt-* 只有 win_*.whl 发行文件，Linux runner 装不到，
+    # 会导致发布包缺失该引擎。
     runs-on: windows-latest
     permissions:
       contents: write
@@ -35,53 +35,36 @@ jobs:
       - name: Preflight dependency install (诊断)
         shell: pwsh
         run: |
-          # 用 Out-File -Encoding utf8 而非 `*>`：后者在 Windows PowerShell 下
-          # 写 UTF-16，且日志编码不可控。
-          # 退出码直接取自 pip（不经管道，避免被管道末端命令覆盖）。
+          # 直接调用 pip，不经 PowerShell 管道：管道会覆盖 $LASTEXITCODE，
+          # 把真实失败伪装成成功。日志由 Python 侧写，此处只负责退出码。
           python -m pip install --target ./_preflight_libs `
             class-widgets-sdk edge-tts loguru onnxruntime pypinyin `
             winrt-runtime winrt-Windows.Foundation `
             winrt-Windows.Foundation.Collections `
             winrt-Windows.Media.SpeechSynthesis `
             winrt-Windows.Storage.Streams `
-            --no-python-version-warning --disable-pip-version-check `
-            --quiet 2>&1 | Out-File -FilePath ./_preflight.log -Encoding utf8
-          $code = $LASTEXITCODE
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value "### Preflight pip exit code: $code"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value '```'
-          Get-Content ./_preflight.log -Tail 60 -Encoding utf8 |
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value '```'
-          if (Test-Path ./_preflight_libs) {
-            Remove-Item -Recurse -Force ./_preflight_libs
+            --no-python-version-warning --disable-pip-version-check --quiet
+          if ($LASTEXITCODE -ne 0) {
+            Remove-Item -Recurse -Force ./_preflight_libs -ErrorAction SilentlyContinue
+            exit $LASTEXITCODE
           }
-          if ($code -ne 0) { exit $code }
+          Remove-Item -Recurse -Force ./_preflight_libs
 
       - name: Build plugin packages
         shell: pwsh
         run: |
-          # 清理任何残留（_build_pack.log 也必须在清理列表内，
-          # 否则会被 copy_source 打进发布包）
+          # 清理任何残留（_build_pack.log 必须在列表内，否则会被 copy_source 打进包）
           foreach ($p in @("_preflight_libs", "_preflight.log", "_pack.log",
                             "_pack2.log", "_build_pack.log")) {
             if (Test-Path $p) { Remove-Item -Recurse -Force $p }
           }
           $env:BUILD_PACK_LOG = "$PWD\_build_pack.log"
-          python --version
-          python -c "import sys, zipfile, tempfile; print('python ok', sys.version)"
-          python build_pack.py 2>&1 | Out-File -FilePath ./_pack.log -Encoding utf8
-          $c1 = $LASTEXITCODE
-          if ($c1 -eq 0) {
-            python build_pack.py --format zip 2>&1 | Out-File -FilePath ./_pack2.log -Encoding utf8
-            $c1 = $LASTEXITCODE
-          }
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value "### 打包退出码: $c1"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value '```'
-          Get-Content ./_pack.log -Tail 100 -Encoding utf8 |
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
-          Get-Content ./_pack2.log -Tail 50 -Encoding utf8 -ErrorAction SilentlyContinue |
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value '```'
+          # 日志与摘要全部由 build_pack.py 自身写入（Python 写文件，
+          # 不经过 PowerShell 管道，避免编码与退出码问题）
+          python build_pack.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python build_pack.py --format zip
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload build log (always)
         if: always()
@@ -90,14 +73,8 @@ jobs:
           name: build-log
           path: |
             _build_pack.log
-            _pack.log
-            _pack2.log
             _preflight.log
           retention-days: 7
-
-      - name: Fail if packaging failed
-        if: failure()
-        run: exit 1
 
       - name: Get version from tag
         id: get_version
