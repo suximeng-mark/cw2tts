@@ -42,6 +42,26 @@ SUMMARY_PATH = os.environ.get("GITHUB_STEP_SUMMARY")
 LOG_PATH = os.environ.get("BUILD_PACK_LOG")
 
 
+def _force_utf8_stdio() -> None:
+    """把 stdout/stderr 切到 UTF-8。
+
+    Windows runner 上 Python 的标准输出默认是 cp1252，一旦输出中文
+    （如「源目录」「打包失败」）就会抛 UnicodeEncodeError。
+    本地控制台多为 UTF-8，所以此问题只在 CI 暴露。
+    """
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
+_force_utf8_stdio()
+
+
 def report(line: str) -> None:
     """输出到 stdout，并在 CI 中同时写入步骤摘要与本地日志。"""
     print(line, flush=True)
