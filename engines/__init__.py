@@ -8,11 +8,15 @@ from loguru import logger
 
 from engines.base import TTSEngine
 from engines.edge import EdgeTTSEngine
+from engines.piper import PiperEngine
 from engines.pyttsx3_engine import Pyttsx3Engine
 from engines.winsdk_engine import WinRTEngine
 
 # 按优先级排列的引擎列表（auto 模式自上而下尝试）
+# Piper 优先：本地神经网络语音，离线可用且音质接近在线引擎。
+# 其余为逐级降级：在线 Edge → Windows 系统语音 → SAPI5。
 ENGINE_REGISTRY: List[Type[TTSEngine]] = [
+    PiperEngine,
     EdgeTTSEngine,
     WinRTEngine,
     Pyttsx3Engine,
@@ -97,6 +101,7 @@ def list_voices_for_engine(engine_name: str) -> List[Tuple[str, str, str]]:
 __all__ = [
     "TTSEngine",
     "EdgeTTSEngine",
+    "PiperEngine",
     "WinRTEngine",
     "Pyttsx3Engine",
     "ENGINE_REGISTRY",

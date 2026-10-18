@@ -1,11 +1,12 @@
 """TTS 自动播报器。
 
 在 NotificationAPI 的 pushed 信号触发时，按通知级别朗读通知内容。
-支持三种后端：EdgeTTS（在线）/ WinRT（Windows 离线）/ pyttsx3（跨平台离线），
-统一由 QMediaPlayer 播放音频。
+支持四种后端：Piper（本地离线神经网络）/ EdgeTTS（在线）/ WinRT（Windows 离线）/
+pyttsx3（跨平台离线），统一由 QMediaPlayer 播放音频。
 
 特性：
 - 动态 TTS 引擎切换与自动故障转移
+- 内置 Piper 本地离线模型，断网也能高质量朗读
 - 自选 Voice
 - 按 activity 自定义朗读文本模板
 - 音量调节
@@ -52,11 +53,34 @@ class VoiceListThread(QThread):
         self.loaded.emit(self._generation, voices)
 
 
+class ModelDownloadThread(QThread):
+    """后台下载 Piper 模型（首次使用约 100MB），避免阻塞界面。"""
+
+    progress = Signal(str, int)
+    finished_ok = Signal(bool, str)
+
+    def __init__(self, voice_id: str, parent=None) -> None:
+        super().__init__(parent)
+        self._voice_id = voice_id
+
+    def run(self) -> None:
+        try:
+            from engines.piper import PiperEngine
+
+            engine = PiperEngine(voice=self._voice_id)
+            engine.ensure_model(progress=lambda name, pct: self.progress.emit(name, pct))
+            self.finished_ok.emit(True, "模型已就绪")
+        except Exception as e:
+            logger.warning("[TTS] 模型下载失败: {}", e)
+            self.finished_ok.emit(False, str(e))
+
+
 class Plugin(CW2Plugin):
     # 通知 QML 刷新的信号
     engineChanged = Signal()
     voiceListChanged = Signal()
     configChanged = Signal()
+    modelProgressChanged = Signal(str, int)
 
     def __init__(self, api: PluginAPI) -> None:
         logger.debug("[TTS] Plugin.__init__ 开始")
@@ -68,6 +92,7 @@ class Plugin(CW2Plugin):
         self._voice_load_generation = 0
         self._failed_engines: set[str] = set()
         self._voice_thread: Optional[VoiceListThread] = None
+        self._model_thread: Optional[ModelDownloadThread] = None
         logger.debug("[TTS] Plugin.__init__ 完成, 默认引擎={}", self._config.engine)
 
     # ---- 生命周期 ----------------------------------------------------------
@@ -108,6 +133,12 @@ class Plugin(CW2Plugin):
             if not self._voice_thread.wait(30000):
                 logger.warning("[TTS] 语音列表线程未能在 30 秒内退出")
             self._voice_thread = None
+
+        if self._model_thread is not None:
+            self._model_thread.requestInterruption()
+            if not self._model_thread.wait(5000):
+                logger.warning("[TTS] 模型下载线程未能在 5 秒内退出")
+            self._model_thread = None
 
         logger.info("[TTS] TTS 自动播报器已卸载")
 
@@ -245,6 +276,68 @@ class Plugin(CW2Plugin):
         if self._speaker:
             return self._speaker.engine_name
         return "none"
+
+    # ---- Piper 模型管理 ----------------------------------------------------
+
+    @Slot(result=str)
+    def getPiperModelState(self) -> str:
+        """返回 piper 模型状态：ready / missing / unavailable。"""
+        try:
+            from engines.piper import PiperEngine
+
+            if not PiperEngine.is_available():
+                return "unavailable"
+            voice = self._config.voice or PiperEngine.BUILTIN_DEFAULT
+            return "ready" if PiperEngine.is_model_downloaded(voice) else "missing"
+        except Exception as e:
+            logger.debug("[TTS] getPiperModelState 异常: {}", e)
+            return "unavailable"
+
+    @Slot(result=str)
+    def getPiperModelPath(self) -> str:
+        try:
+            from engines.piper import PiperEngine
+
+            return str(PiperEngine.get_data_dir())
+        except Exception:
+            return ""
+
+    @Slot()
+    def downloadPiperModel(self) -> None:
+        """后台下载 Piper 模型，进度经 modelProgressChanged 回传。"""
+        if self._model_thread is not None:
+            return
+        try:
+            from engines.piper import PiperEngine
+
+            if not PiperEngine.is_available():
+                logger.warning("[TTS] 未安装 onnxruntime，无法下载模型")
+                return
+            voice = self._config.voice or PiperEngine.BUILTIN_DEFAULT
+        except Exception as e:
+            logger.warning("[TTS] downloadPiperModel 前置检查失败: {}", e)
+            return
+
+        thread = ModelDownloadThread(voice, self)
+        thread.progress.connect(self.modelProgressChanged)
+        thread.finished_ok.connect(self._on_model_download_done)
+        thread.finished.connect(self._on_model_thread_finished)
+        self._model_thread = thread
+        thread.start()
+
+    @Slot(bool, str)
+    def _on_model_download_done(self, ok: bool, message: str) -> None:
+        if ok:
+            logger.info("[TTS] Piper 模型下载完成")
+            self.modelProgressChanged.emit("", 100)
+            self.voiceListChanged.emit()
+            self.engineChanged.emit()
+        else:
+            logger.warning("[TTS] Piper 模型下载失败: {}", message)
+
+    @Slot()
+    def _on_model_thread_finished(self) -> None:
+        self._model_thread = None
 
     # ---- 内部方法 ----------------------------------------------------------
 

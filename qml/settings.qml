@@ -28,6 +28,17 @@ PluginPage {
     property string activeEngine: ""
     property bool ready: false
 
+    // Piper 离线模型状态：unavailable / missing / ready
+    property string piperState: "unavailable"
+    property bool piperDownloading: false
+    property int piperPercent: 0
+    property string piperFileName: ""
+
+    function refreshPiperState() {
+        if (!backend) return
+        piperState = backend.getPiperModelState()
+    }
+
     function getLocales() {
         let seen = {}
         let locales = []
@@ -58,6 +69,7 @@ PluginPage {
         currentVolume = backend.getVolume()
         activeEngine = backend.getActiveEngineName()
         backend.refreshVoiceList()
+        refreshPiperState()
         ready = true
     }
 
@@ -66,6 +78,7 @@ PluginPage {
         function onEngineChanged() {
             currentEngine = backend.getCurrentEngine()
             activeEngine = backend.getActiveEngineName()
+            refreshPiperState()
         }
         function onVoiceListChanged() {
             voiceModel = backend.getVoiceList()
@@ -82,6 +95,18 @@ PluginPage {
         function onConfigChanged() {
             currentVoice = backend.getCurrentVoice()
             currentVolume = backend.getVolume()
+        }
+        function onModelProgressChanged(fileName, percent) {
+            if (percent >= 100) {
+                piperDownloading = false
+                piperPercent = 100
+                piperFileName = ""
+                refreshPiperState()
+                return
+            }
+            piperDownloading = true
+            piperPercent = percent
+            piperFileName = fileName
         }
     }
 
@@ -207,6 +232,71 @@ PluginPage {
                     flat: true
                     ToolTip { text: qsTr("刷新语音列表"); visible: parent.hovered }
                     onClicked: backend.refreshVoiceList()
+                }
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════
+    // 离线模型
+    // ═══════════════════════════════════════════
+    ColumnLayout {
+        Layout.fillWidth: true
+        spacing: 4
+        visible: piperState !== "unavailable"
+
+        Text {
+            typography: Typography.BodyStrong
+            text: qsTr("离线朗读模型")
+        }
+
+        SettingExpander {
+            Layout.fillWidth: true
+            icon.name: "ic_fluent_cloud_off_20_regular"
+            title: qsTr("Piper 本地语音模型")
+            description: {
+                if (piperState === "ready")
+                    return qsTr("已就绪，断网也能高质量朗读")
+                if (piperDownloading)
+                    return qsTr("下载中 %1% · %2").arg(piperPercent).arg(piperFileName)
+                return qsTr("未下载（首次约 100MB，之后完全离线）")
+            }
+
+            action: Button {
+                text: piperState === "ready" ? qsTr("重新下载") : qsTr("下载")
+                enabled: !piperDownloading
+                icon.name: "ic_fluent_arrow_download_20_regular"
+                onClicked: {
+                    piperDownloading = true
+                    piperPercent = 0
+                    backend.downloadPiperModel()
+                }
+            }
+
+            SettingItem {
+                title: qsTr("离线语音")
+                description: qsTr("本地神经网络合成，音质接近在线引擎，断网可用")
+
+                contentItem: ProgressBar {
+                    Layout.fillWidth: true
+                    visible: piperDownloading
+                    from: 0
+                    to: 100
+                    value: piperPercent
+                }
+            }
+
+            SettingItem {
+                title: qsTr("模型目录")
+                description: backend ? backend.getPiperModelPath() : ""
+
+                contentItem: Button {
+                    text: qsTr("打开目录")
+                    icon.name: "ic_fluent_folder_open_20_regular"
+                    onClicked: {
+                        let path = backend.getPiperModelPath()
+                        if (path) Qt.openUrlExternally("file:///" + path.replace(/\\/g, "/"))
+                    }
                 }
             }
         }

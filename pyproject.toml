@@ -1,7 +1,7 @@
 [project]
 name = "com-su-tts"
-version = "1.0.0"
-description = "监听课表通知并自动语音播报"
+version = "1.0.1"
+description = "监听课表通知并自动语音播报，内置 Piper 本地离线朗读"
 authors = [
     { name = "suximeng-mark" },
 ]
@@ -11,6 +11,8 @@ dependencies = [
     "class-widgets-sdk",
     "edge-tts",
     "loguru",
+    "onnxruntime",
+    "pypinyin",
     "winrt-runtime; sys_platform == 'win32'",
     "winrt-Windows.Foundation; sys_platform == 'win32'",
     "winrt-Windows.Foundation.Collections; sys_platform == 'win32'",
