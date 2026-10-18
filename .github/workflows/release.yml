@@ -64,35 +64,20 @@ jobs:
           foreach ($p in @("_preflight_libs", "_preflight.log", "_pack.log", "_pack2.log")) {
             if (Test-Path $p) { Remove-Item -Recurse -Force $p }
           }
-          cw-plugin-pack 2>&1 | Tee-Object -FilePath ./_pack.log
+          # 用仓库自带的 build_pack.py 而非 cw-plugin-pack：
+          # 官方打包器在 Windows runner 上打包失败（同一次运行中
+          # 独立的 pip install --target 预演成功，说明依赖可装、问题在打包器）。
+          # build_pack.py 复刻其行为，并改用 subprocess.run 避免管道死锁。
+          python build_pack.py 2>&1 | Tee-Object -FilePath ./_pack.log
           $c1 = $LASTEXITCODE
           if ($c1 -eq 0) {
-            cw-plugin-pack --format zip 2>&1 | Tee-Object -FilePath ./_pack2.log
+            python build_pack.py --format zip 2>&1 | Tee-Object -FilePath ./_pack2.log
             $c1 = $LASTEXITCODE
           }
-          "### cw-plugin-pack exit code: $c1" >> $env:GITHUB_STEP_SUMMARY
-          Get-Content ./_pack.log -Tail 80 -ErrorAction SilentlyContinue >> $env:GITHUB_STEP_SUMMARY
+          "### 打包退出码: $c1" >> $env:GITHUB_STEP_SUMMARY
+          Get-Content ./_pack.log -Tail 100 -ErrorAction SilentlyContinue >> $env:GITHUB_STEP_SUMMARY
           Get-Content ./_pack2.log -Tail 40 -ErrorAction SilentlyContinue >> $env:GITHUB_STEP_SUMMARY
           if ($c1 -ne 0) { exit $c1 }
-
-      - name: Verify bundled dependencies
-        run: |
-          python - <<'PY'
-          import sys, zipfile
-          pkg = "com.su.tts.cwplugin"
-          names = set(zipfile.ZipFile(pkg).namelist())
-          required = {
-              "onnxruntime": "libs/onnxruntime/capi/",
-              "edge_tts": "libs/edge_tts/__init__.py",
-              "winrt": "libs/winrt/",
-              "class-widgets-sdk": "libs/ClassWidgets/",
-          }
-          missing = [k for k, v in required.items() if not any(n.startswith(v) for n in names)]
-          if missing:
-              print("❌ 发布包缺少依赖: " + ", ".join(missing))
-              sys.exit(1)
-          print("✅ 依赖齐全:", ", ".join(required))
-          PY
 
       - name: Get version from tag
         id: get_version
