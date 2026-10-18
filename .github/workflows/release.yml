@@ -75,7 +75,20 @@ jobs:
             $c1 = $LASTEXITCODE
           }
           "exit=$c1" | Out-File -FilePath ./_build_pack.log -Append -Encoding utf8
-          if ($c1 -ne 0) { exit $c1 }
+          if ($c1 -ne 0) {
+            # 由 PowerShell 自身发出注解：Python 的 ::error:: 可能被管道吞掉，
+            # 而本机无 gh CLI/token，runs/{id}/logs 与 artifact 下载均需认证，
+            # check-runs annotations API 是唯一可匿名读取的通道。
+            $err = Get-Content ./_pack.log -Raw -ErrorAction SilentlyContinue
+            if (-not $err) { $err = Get-Content ./_build_pack.log -Raw -ErrorAction SilentlyContinue }
+            if ($err) {
+              $esc = $err.Replace('%','%25').Replace("`r",'').Replace("`n",'%0A')
+              Write-Host "::error title=build_pack failed::$esc"
+            } else {
+              Write-Host "::error title=build_pack failed::no log captured (exit $c1)"
+            }
+            exit $c1
+          }
 
       - name: Upload build log (always)
         if: always()
