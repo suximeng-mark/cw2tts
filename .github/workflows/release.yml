@@ -104,15 +104,29 @@ jobs:
 
       - name: Get version from tag
         id: get_version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+        shell: pwsh
+        run: |
+          # 必须用 PowerShell 语法：runner 是 windows-latest，默认 shell 为 pwsh。
+          # 之前写的 bash 展开 ${GITHUB_REF#refs/tags/v} 与 $GITHUB_ENV 在 pwsh 下
+          # 都取不到值 —— VERSION 为空会让 git-cliff 无输出，Release 正文变空
+          # （v1.1.0 / v1.1.1 均为此问题）。
+          $tag = $env:GITHUB_REF -replace '^refs/tags/v', ''
+          "VERSION=$tag" >> $env:GITHUB_ENV
+          Write-Host "VERSION=$tag"
 
       - name: Generate changelog with git-cliff
         id: generate_changelog
+        shell: pwsh
         run: |
-          git-cliff --tag v${{ env.VERSION }} > CHANGELOG.md
-          echo "CHANGELOG<<EOF" >> $GITHUB_ENV
-          cat CHANGELOG.md >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          git-cliff --tag "v$env:VERSION" > CHANGELOG.md
+          $cl = Get-Content ./CHANGELOG.md -Raw -Encoding utf8
+          if ($cl) {
+            "CHANGELOG<<CWEOF" >> $env:GITHUB_ENV
+            $cl >> $env:GITHUB_ENV
+            "CWEOF" >> $env:GITHUB_ENV
+          } else {
+            Write-Host "::warning title=changelog::git-cliff 未生成内容，Release 正文将为空"
+          }
 
       - name: Create Release
         id: create_release
