@@ -143,6 +143,9 @@ PluginPage {
             Switch {
                 id: enableSwitch
                 checked: speakerEnabled
+                // RinUI 的 Switch 默认渲染 "On"/"Off"，此处改为中文
+                checkedText: qsTr("开")
+                uncheckedText: qsTr("关")
                 onToggled: {
                     if (!ready) return
                     speakerEnabled = checked

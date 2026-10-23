@@ -17,6 +17,9 @@ venv/
 .vscode/
 .DS_Store
 
+# 工作日志（不该进发布包）
+.workbuddy/
+
 # CI 生成物
 CHANGELOG.md
 

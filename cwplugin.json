@@ -1,7 +1,7 @@
 {
   "id": "com.su.tts",
   "name": "TTS 自动播报器",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "api_version": ">=0.3.2",
   "entry": "main.py",
   "author": "suximeng-mark",
