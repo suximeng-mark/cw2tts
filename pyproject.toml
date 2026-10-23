@@ -1,6 +1,6 @@
 [project]
 name = "com-su-tts"
-version = "1.1.1"
+version = "1.1.2"
 description = "监听课表通知并自动语音播报，内置 Piper 本地离线朗读"
 authors = [
     { name = "suximeng-mark" },
