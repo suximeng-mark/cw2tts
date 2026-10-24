@@ -104,7 +104,7 @@ python build_pack.py --format zip
 # 4. 发布：打 tag vX.Y.Z 推送到 GitHub，release.yml 自动构建、
 #    发布到插件广场并创建 Release
 #    （需先在仓库 Secrets 中配置 CWPT_TOKEN，令牌在广场控制台获取）
-git tag v1.1.5 && git push --tags
+git tag v1.1.6 && git push --tags
 ```
 
 ## 致谢
