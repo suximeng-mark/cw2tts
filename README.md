@@ -20,7 +20,9 @@
 - **语速调节**：0.5×~2.0× 无级调节（仅 Piper 本地引擎生效，在线与系统语音保持原速）。
 - **自定义测试文本**：可自行填写试听内容，留空则用默认测试语句。
 - **可配置朗读文案**：为 5 种场景分别设置模板，支持变量快速插入与逐条试听。
+- **播报范围**：5 种场景可分别开关；带静音标记的通知默认跳过，可手动开启朗读。
 - **音量 / 语音调节**：设置页内实时调节。
+- **关于与更新**：显示版本、作者、插件 ID 与仓库/广场链接，可一键检查插件广场上的新版本。
 
 ## 离线朗读（Piper）
 
@@ -96,11 +98,13 @@ pip install -e .
 # 2. 在 Class Widgets 2 本体中调试运行本插件
 
 # 3. 打包为可分发包
-cw-plugin-pack            # 生成 .cwplugin
-cw-plugin-pack --format zip
+python build_pack.py            # 生成 .cwplugin
+python build_pack.py --format zip
 
-# 4. 发布：打 tag vX.Y.Z 推送到 GitHub，release.yml 自动构建并发布
-git tag v1.1.0 && git push --tags
+# 4. 发布：打 tag vX.Y.Z 推送到 GitHub，release.yml 自动构建、
+#    发布到插件广场并创建 Release
+#    （需先在仓库 Secrets 中配置 CWPT_TOKEN，令牌在广场控制台获取）
+git tag v1.1.5 && git push --tags
 ```
 
 ## 致谢

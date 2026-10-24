@@ -5,15 +5,18 @@ import RinUI
 import ClassWidgets.Plugins
 
 // ═══════════════════════════════════════════════════════════════════
-// TTS 自动播报 · 设置页
+// TTS 自动播报 · 设置页（v1.2.0）
+//
+// 分区：自动播报 / 引擎与语音 / 离线朗读 / 播放与测试 /
+//       播报范围 / 朗读文案 / 关于与更新
 //
 // 后端槽函数见 main.py，名称/参数/返回类型必须与 backend.xxx() 一致。
 // 关键规则：
 //   ① 所有 root.xxx 都是显式声明的 property
 //      —— Qt 6 给未声明属性赋值静默失败、读取恒为 undefined
-//   ② 所有写后端的事件处理器，第一行 if (!root.ready) return
+//   ② 所有写后端的事件处理器，第一行 if (!root.ready || root.syncing) return
 //      —— 否则 Component.onCompleted 赋初值会把设置写一遍
-//   ③ 结构性数据（模板列表）换新数组/新对象，字段编辑原地改
+//   ③ 结构性数据（模板/场景列表）换新数组，单字段状态原地改
 //   ④ TextField 不在输入过程中写盘，失焦或回车才写回
 //   ⑤ 后端改动只走 Signal + Connections，不轮询
 //   ⑥ Switch 必须覆盖 checkedText/uncheckedText
@@ -47,11 +50,22 @@ PluginPage {
     property bool pluginEnabled: true
     property string testText: ""
 
+    // 场景播报：[{key, enabled}, ...]，顺序与模板一致
+    property var announceItems: []
+    property int announceRev: 0
+    property bool announceSilent: false
+
     // Piper 离线模型三态：unavailable / missing / ready
     property string piperState: "unavailable"
     property bool piperDownloading: false
     property int piperPercent: 0
     property string piperFileName: ""
+
+    // 关于 / 更新检查
+    property var pluginInfo: ({})
+    property var updateState: ({
+        status: "idle", current: "", latest: "", message: "", url: ""
+    })
 
     // 「快速插入变量」的目标输入框
     property string editKey: ""
@@ -91,10 +105,25 @@ PluginPage {
         return icons[key] || "ic_fluent_text_description_20_regular"
     }
 
+    // 一天中的自然顺序：预备铃 → 上课 → 课间 → 活动 → 放学
+    function activityRank(key) {
+        var order = ["preparation", "class", "break", "activity", "free"]
+        var index = order.indexOf(key)
+        return index < 0 ? order.length : index
+    }
+
     // ═══════════════════ 工具函数 ═══════════════════
     function setResult(msg, ok) {
         root.resultText = msg
         root.resultOk = ok !== false
+    }
+
+    function openUrl(url) {
+        if (!url) {
+            root.setResult(qsTr("没有可打开的链接"), false)
+            return
+        }
+        Qt.openUrlExternally(url)
     }
 
     function indexOfEngine(id) {
@@ -158,6 +187,7 @@ PluginPage {
         root.pluginEnabled = backend.isEnabled()
         root.volumeValue = backend.getVolume()
         root.rateValue = backend.getRate()
+        root.announceSilent = backend.getAnnounceSilent()
         root.engineId = backend.getCurrentEngine()
         root.voiceId = backend.getCurrentVoice()
         root.activeEngine = backend.getActiveEngineName()
@@ -167,6 +197,9 @@ PluginPage {
     function refreshTemplates() {
         if (!backend) return
         var keys = backend.getTemplateKeys()
+        keys.sort(function(a, b) {
+            return root.activityRank(a) - root.activityRank(b)
+        })
         var texts = {}
         for (var i = 0; i < keys.length; i++)
             texts[keys[i]] = backend.getTemplate(keys[i])
@@ -179,12 +212,35 @@ PluginPage {
         root.piperState = backend.getPiperModelState()
     }
 
+    function refreshAnnounce() {
+        if (!backend) return
+        root.syncing = true
+        var items = backend.getAnnounceTypes()
+        var out = []
+        for (var i = 0; i < items.length; i++)
+            out.push({ key: items[i].key, enabled: !!items[i].enabled })
+        out.sort(function(a, b) {
+            return root.activityRank(a.key) - root.activityRank(b.key)
+        })
+        root.announceItems = out
+        root.announceSilent = backend.getAnnounceSilent()
+        root.syncing = false
+    }
+
+    function refreshAbout() {
+        if (!backend) return
+        root.pluginInfo = backend.getPluginInfo()
+        root.updateState = backend.getUpdateState()
+    }
+
     function refreshAll() {
         root.refreshEngines()
         root.refreshVoices()
         root.refreshConfig()
         root.refreshTemplates()
         root.refreshPiper()
+        root.refreshAnnounce()
+        root.refreshAbout()
     }
 
     // ═══════════════════ 写操作 ═══════════════════
@@ -285,6 +341,30 @@ PluginPage {
         root.setResult(qsTr("正在朗读测试文本"), true)
     }
 
+    function setAnnounce(key, enabled) {
+        if (!root.ready || root.syncing) return
+        backend.setAnnounceType(key, enabled)
+        for (var i = 0; i < root.announceItems.length; i++) {
+            if (root.announceItems[i].key === key) {
+                root.announceItems[i].enabled = enabled
+                break
+            }
+        }
+        root.announceRev++
+        root.setResult(enabled
+            ? qsTr("已开启「%1」播报").arg(root.activityLabel(key))
+            : qsTr("已关闭「%1」播报").arg(root.activityLabel(key)), true)
+    }
+
+    function setAnnounceSilent(enabled) {
+        if (!root.ready || root.syncing) return
+        root.announceSilent = enabled
+        backend.setAnnounceSilent(enabled)
+        root.setResult(enabled
+            ? qsTr("静音通知也会朗读")
+            : qsTr("已跳过静音通知"), true)
+    }
+
     function startDownload() {
         if (!backend) return
         root.piperDownloading = true
@@ -299,6 +379,13 @@ PluginPage {
         var path = backend.getPiperModelPath()
         if (path) Qt.openUrlExternally("file:///" + path.replace(/\\/g, "/"))
         else root.setResult(qsTr("没有拿到模型目录路径"), false)
+    }
+
+    function checkUpdate() {
+        if (!backend) return
+        if (root.updateState.status === "checking") return
+        backend.checkForUpdate()
+        root.setResult(qsTr("正在检查插件广场上的版本…"), true)
     }
 
     // ═══════════════════ 派生属性 ═══════════════════
@@ -336,10 +423,10 @@ PluginPage {
 
     property string rateDescription: {
         var pct = Math.round(root.rateValue * 100)
-        if (Math.abs(root.rateValue - 1.0) < 0.01) return qsTr("正常（%1%）").arg(pct)
-        return root.rateValue > 1.0
-            ? qsTr("偏快（%1%）").arg(pct)
-            : qsTr("偏慢（%1%）").arg(pct)
+        var tone = Math.abs(root.rateValue - 1.0) < 0.01
+            ? qsTr("正常")
+            : (root.rateValue > 1.0 ? qsTr("偏快") : qsTr("偏慢"))
+        return qsTr("%1（%2%）· 仅 Piper 本地引擎生效").arg(tone).arg(pct)
     }
 
     property string piperDescription: {
@@ -347,6 +434,42 @@ PluginPage {
         if (root.piperDownloading)
             return qsTr("下载中 %1% · %2").arg(root.piperPercent).arg(root.piperFileName)
         return qsTr("未下载（首次约 100MB，之后完全离线）")
+    }
+
+    property int enabledSceneCount: {
+        root.announceRev
+        var count = 0
+        for (var i = 0; i < root.announceItems.length; i++)
+            if (root.announceItems[i].enabled) count++
+        return count
+    }
+
+    property string announceDescription: {
+        var total = root.announceItems.length
+        if (total === 0) return qsTr("正在读取场景…")
+        return qsTr("%1 个场景中已启用 %2 个").arg(total).arg(root.enabledSceneCount)
+    }
+
+    property string aboutDescription: {
+        var info = root.pluginInfo || {}
+        var parts = []
+        if (info.version) parts.push(qsTr("版本 %1").arg(info.version))
+        if (info.author) parts.push(qsTr("作者 %1").arg(info.author))
+        if (info.id) parts.push(qsTr("ID %1").arg(info.id))
+        return parts.join(" · ") || qsTr("暂无插件信息")
+    }
+
+    property string updateDescription: {
+        var state = root.updateState || {}
+        if (state.status === "checking") return qsTr("正在连接插件广场…")
+        if (state.status === "update_available")
+            return qsTr("发现新版本 %1（当前 %2）").arg(state.latest).arg(state.current)
+        if (state.status === "up_to_date")
+            return qsTr("已是最新版本（%1）").arg(state.current)
+        if (state.status === "missing") return qsTr("插件广场暂未收录此插件")
+        if (state.status === "error")
+            return qsTr("检查失败：%1").arg(state.message || qsTr("网络不可用"))
+        return qsTr("当前版本 %1 · 点击右侧检查是否有新版本").arg(state.current || "-")
     }
 
     // ═══════════════════ 生命周期 ═══════════════════
@@ -365,6 +488,7 @@ PluginPage {
         }
         function onVoiceListChanged() { root.refreshVoices() }
         function onConfigChanged() { root.refreshConfig() }
+        function onUpdateStateChanged() { root.refreshAbout() }
         function onModelProgressChanged(fileName, percent) {
             if (percent >= 100) {
                 root.piperDownloading = false
@@ -380,7 +504,7 @@ PluginPage {
         }
     }
 
-    // ═══════════════════ 总开关 ═══════════════════
+    // ═══════════════════ 自动播报 ═══════════════════
     ColumnLayout {
         Layout.fillWidth: true
         spacing: 4
@@ -487,7 +611,7 @@ PluginPage {
         }
     }
 
-    // ═══════════════════ 离线模型 ═══════════════════
+    // ═══════════════════ 离线朗读 ═══════════════════
     ColumnLayout {
         Layout.fillWidth: true
         spacing: 4
@@ -539,14 +663,14 @@ PluginPage {
         }
     }
 
-    // ═══════════════════ 播放设置 ═══════════════════
+    // ═══════════════════ 播放与测试 ═══════════════════
     ColumnLayout {
         Layout.fillWidth: true
         spacing: 4
 
         Text {
             typography: Typography.BodyStrong
-            text: qsTr("播放设置")
+            text: qsTr("播放与测试")
         }
 
         SettingCard {
@@ -566,7 +690,7 @@ PluginPage {
                     stepSize: 0.05
                     value: root.volumeValue
                     onMoved: {
-                        if (!root.ready) return
+                        if (!root.ready || root.syncing) return
                         backend.setVolume(value)
                     }
                 }
@@ -597,7 +721,7 @@ PluginPage {
                     stepSize: 0.1
                     value: root.rateValue
                     onMoved: {
-                        if (!root.ready) return
+                        if (!root.ready || root.syncing) return
                         backend.setRate(value)
                     }
                 }
@@ -615,36 +739,98 @@ PluginPage {
             Layout.fillWidth: true
             icon.name: "ic_fluent_play_20_regular"
             title: qsTr("测试朗读")
-            description: qsTr("用当前引擎、语音、音量、语速读一句")
+            description: qsTr("用当前引擎、语音、音量、语速读一句，留空则用默认语句")
 
-            Button {
-                text: qsTr("测试")
-                icon.name: "ic_fluent_play_20_regular"
-                onClicked: root.speakTest()
+            RowLayout {
+                spacing: 8
+
+                TextField {
+                    id: testField
+                    Layout.preferredWidth: 240
+                    placeholderText: qsTr("同学们好，现在开始上课。")
+                    text: root.testText
+                    onTextChanged: { if (activeFocus) root.testText = text }
+                    onEditingFinished: root.testText = text
+                }
+
+                Button {
+                    text: qsTr("测试")
+                    icon.name: "ic_fluent_play_20_regular"
+                    onClicked: root.speakTest()
+                }
+            }
+        }
+    }
+
+    // ═══════════════════ 播报范围 ═══════════════════
+    ColumnLayout {
+        Layout.fillWidth: true
+        spacing: 4
+
+        Text {
+            typography: Typography.BodyStrong
+            text: qsTr("播报范围")
+        }
+
+        SettingExpander {
+            Layout.fillWidth: true
+            icon.name: "ic_fluent_megaphone_20_regular"
+            title: qsTr("按场景播报")
+            description: root.announceDescription
+
+            Repeater {
+                model: root.announceItems
+
+                SettingItem {
+                    id: announceItem
+                    required property int index
+                    required property var modelData
+
+                    title: root.activityLabel(announceItem.modelData.key)
+                    description: sceneSwitch.checked ? qsTr("会朗读") : qsTr("跳过")
+
+                    RowLayout {
+                        spacing: 8
+
+                        Icon {
+                            name: root.activityIcon(announceItem.modelData.key)
+                            size: 16
+                            color: Colors.proxy.textSecondaryColor
+                        }
+
+                        Switch {
+                            id: sceneSwitch
+                            checked: announceItem.modelData.enabled
+                            checkedText: qsTr("朗读")
+                            uncheckedText: qsTr("跳过")
+                            onToggled: {
+                                if (!root.ready || root.syncing) return
+                                root.setAnnounce(announceItem.modelData.key, checked)
+                            }
+                        }
+                    }
+                }
             }
         }
 
         SettingCard {
             Layout.fillWidth: true
-            icon.name: "ic_fluent_text_font_20_regular"
-            title: qsTr("自定义测试文本")
-            description: qsTr("留空则使用默认测试语句")
+            icon.name: "ic_fluent_alert_20_regular"
+            title: qsTr("静音通知")
+            description: root.announceSilent
+                ? qsTr("带静音标记的通知也会朗读")
+                : qsTr("带静音标记的通知直接跳过")
 
-            TextField {
-                id: testField
-                Layout.preferredWidth: 260
-                placeholderText: qsTr("同学们好，现在开始上课。")
-                text: root.testText
-                onTextChanged: { if (activeFocus) root.testText = text }
-                onEditingFinished: root.testText = text
+            Switch {
+                id: silentSwitch
+                checked: root.announceSilent
+                checkedText: qsTr("朗读")
+                uncheckedText: qsTr("跳过")
+                onToggled: {
+                    if (!root.ready || root.syncing) return
+                    root.setAnnounceSilent(checked)
+                }
             }
-        }
-
-        SettingCard {
-            Layout.fillWidth: true
-            icon.name: "ic_fluent_info_20_regular"
-            title: qsTr("语速适用范围")
-            description: qsTr("仅 Piper 本地引擎支持调速；在线与系统语音保持原速。")
         }
     }
 
@@ -745,6 +931,81 @@ PluginPage {
                             onClicked: root.speakTemplate(templateExpander.modelData)
                         }
                     }
+                }
+            }
+        }
+    }
+
+    // ═══════════════════ 关于与更新 ═══════════════════
+    ColumnLayout {
+        Layout.fillWidth: true
+        spacing: 4
+
+        Text {
+            typography: Typography.BodyStrong
+            text: qsTr("关于与更新")
+        }
+
+        SettingExpander {
+            Layout.fillWidth: true
+            icon.name: "ic_fluent_info_20_regular"
+            title: root.pluginInfo.name || qsTr("TTS 自动播报器")
+            description: root.aboutDescription
+
+            SettingItem {
+                title: qsTr("插件 ID")
+                description: root.pluginInfo.id || "-"
+            }
+
+            SettingItem {
+                title: qsTr("API 版本")
+                description: root.pluginInfo.apiVersion || "-"
+            }
+
+            SettingItem {
+                title: qsTr("相关链接")
+
+                RowLayout {
+                    spacing: 8
+
+                    Button {
+                        text: qsTr("插件广场")
+                        icon.name: "ic_fluent_globe_20_regular"
+                        enabled: !!root.pluginInfo.plaza
+                        onClicked: root.openUrl(root.pluginInfo.plaza)
+                    }
+
+                    Button {
+                        text: qsTr("GitHub")
+                        icon.name: "ic_fluent_code_20_regular"
+                        enabled: !!root.pluginInfo.repo
+                        onClicked: root.openUrl(root.pluginInfo.repo)
+                    }
+                }
+            }
+        }
+
+        SettingCard {
+            Layout.fillWidth: true
+            icon.name: "ic_fluent_arrow_sync_20_regular"
+            title: qsTr("检查更新")
+            description: root.updateDescription
+
+            RowLayout {
+                spacing: 8
+
+                Button {
+                    text: qsTr("检查更新")
+                    icon.name: "ic_fluent_arrow_sync_20_regular"
+                    enabled: root.updateState.status !== "checking"
+                    onClicked: root.checkUpdate()
+                }
+
+                Button {
+                    text: qsTr("查看新版本")
+                    icon.name: "ic_fluent_open_20_regular"
+                    visible: root.updateState.status === "update_available"
+                    onClicked: root.openUrl(root.updateState.url)
                 }
             }
         }

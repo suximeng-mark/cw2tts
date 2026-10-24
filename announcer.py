@@ -18,7 +18,7 @@ _PROVIDER_SUFFIX_MAP: Dict[str, str] = {
 }
 
 
-def _resolve_activity_key(provider_id: str) -> Optional[str]:
+def resolve_activity_key(provider_id: str) -> Optional[str]:
     """从 provider_id 解析 activity 类型 key。
 
     例如: "com.classwidgets.schedule.runtime.class" → "class"
@@ -55,7 +55,7 @@ def build_announce_text(
     next_teacher = str(ctx.get("next_teacher") or "")
     next_location = str(ctx.get("next_location") or "")
 
-    activity_key = _resolve_activity_key(provider_id)
+    activity_key = resolve_activity_key(provider_id)
 
     if activity_key:
         tmpl_dict = templates if templates else DEFAULT_TEMPLATES

@@ -14,18 +14,35 @@ pyttsx3（跨平台离线），统一由 QMediaPlayer 播放音频。
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Optional
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from loguru import logger
 from PySide6.QtCore import QThread, Signal, Slot
 
 from ClassWidgets.SDK import CW2Plugin, PluginAPI
 
-from announcer import build_announce_text
+from announcer import build_announce_text, resolve_activity_key
 from engines import create_engine, list_available_engines, list_voices_for_engine
 from speaker import Speaker
 from tconfig import DEFAULT_TEMPLATES, TTSPluginConfig
+
+PLAZA_VERSIONS_API = "https://plaza.cw.rinlit.cn/api/plugins/versions"
+PLAZA_PLUGIN_URL = "https://plaza.cw.rinlit.cn/plugins/{pid}"
+
+
+def version_key(text: str) -> tuple[int, ...]:
+    """把 1.2.3 转成可比较的元组；非数字段按 0 处理。"""
+    parts: list[int] = []
+    for chunk in str(text or "").strip().lstrip("vV").split("."):
+        digits = "".join(ch for ch in chunk if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    while parts and parts[-1] == 0:
+        parts.pop()
+    return tuple(parts) or (0,)
 
 
 class VoiceListThread(QThread):
@@ -75,12 +92,61 @@ class ModelDownloadThread(QThread):
             self.finished_ok.emit(False, str(e))
 
 
+class UpdateCheckThread(QThread):
+    """向插件广场查询当前已发布版本（后台执行，避免阻塞界面）。"""
+
+    checked = Signal(str, str, str)  # status, latest, message
+
+    def __init__(self, plugin_id: str, current_version: str, parent=None) -> None:
+        super().__init__(parent)
+        self._plugin_id = plugin_id
+        self._current_version = current_version
+
+    def run(self) -> None:
+        status, latest, message = "error", "", ""
+        try:
+            query = urlencode({"ids": self._plugin_id})
+            request = Request(
+                f"{PLAZA_VERSIONS_API}?{query}",
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": f"CW2TTS/{self._current_version}",
+                },
+            )
+            with urlopen(request, timeout=8) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            if not payload.get("ok"):
+                raise ValueError(str(payload.get("error") or "插件广场返回失败"))
+            data = payload.get("data") or {}
+            for item in data.get("plugins") or []:
+                if item.get("id") == self._plugin_id:
+                    latest = str(item.get("version") or "")
+                    break
+            if not latest:
+                status = "missing"
+            elif version_key(latest) > version_key(self._current_version):
+                status = "update_available"
+            else:
+                status = "up_to_date"
+            logger.debug("[TTS] 检查更新: 本地={} 广场={} 状态={}",
+                         self._current_version, latest, status)
+        except Exception as e:
+            status, message = "error", str(e)
+            logger.warning("[TTS] 检查更新失败: {}", e)
+
+        # 卸载竞态：线程被要求中断时不能再往已销毁的 QObject 发信号
+        if self.isInterruptionRequested():
+            return
+        self.checked.emit(status, latest, message)
+
+
 class Plugin(CW2Plugin):
     # 通知 QML 刷新的信号
     engineChanged = Signal()
     voiceListChanged = Signal()
     configChanged = Signal()
     modelProgressChanged = Signal(str, int)
+    updateStateChanged = Signal()
 
     def __init__(self, api: PluginAPI) -> None:
         logger.debug("[TTS] Plugin.__init__ 开始")
@@ -93,6 +159,12 @@ class Plugin(CW2Plugin):
         self._failed_engines: set[str] = set()
         self._voice_thread: Optional[VoiceListThread] = None
         self._model_thread: Optional[ModelDownloadThread] = None
+        self._update_thread: Optional[UpdateCheckThread] = None
+        self._update_state: dict[str, str] = {
+            "status": "idle",
+            "latest": "",
+            "message": "",
+        }
         logger.debug("[TTS] Plugin.__init__ 完成, 默认引擎={}", self._config.engine)
 
     # ---- 生命周期 ----------------------------------------------------------
@@ -139,6 +211,12 @@ class Plugin(CW2Plugin):
             if not self._model_thread.wait(5000):
                 logger.warning("[TTS] 模型下载线程未能在 5 秒内退出")
             self._model_thread = None
+
+        if self._update_thread is not None:
+            self._update_thread.requestInterruption()
+            if not self._update_thread.wait(5000):
+                logger.warning("[TTS] 更新检查线程未能在 5 秒内退出")
+            self._update_thread = None
 
         logger.info("[TTS] TTS 自动播报器已卸载")
 
@@ -371,7 +449,110 @@ class Plugin(CW2Plugin):
     def _on_model_thread_finished(self) -> None:
         self._model_thread = None
 
+    # ---- 播报范围 ----------------------------------------------------------
+
+    @Slot(result=list)
+    def getAnnounceTypes(self) -> list:
+        return [
+            {
+                "key": key,
+                "enabled": bool(self._config.announce_types.get(key, True)),
+            }
+            for key in DEFAULT_TEMPLATES
+        ]
+
+    @Slot(str, bool)
+    def setAnnounceType(self, key: str, enabled: bool) -> None:
+        if key not in DEFAULT_TEMPLATES:
+            logger.warning("[TTS] 未知播报场景: {}", key)
+            return
+        types = dict(self._config.announce_types)
+        types[key] = bool(enabled)
+        self._config.announce_types = types
+        self._save_config()
+        self.configChanged.emit()
+
+    @Slot(result=bool)
+    def getAnnounceSilent(self) -> bool:
+        return bool(self._config.announce_silent)
+
+    @Slot(bool)
+    def setAnnounceSilent(self, enabled: bool) -> None:
+        self._config.announce_silent = bool(enabled)
+        self._save_config()
+        self.configChanged.emit()
+
+    # ---- 关于 / 更新检查 ----------------------------------------------------
+
+    @Slot(result=dict)
+    def getPluginInfo(self) -> dict:
+        meta = self._plugin_meta()
+        pid = str(meta.get("id") or self.pid or "")
+        return {
+            "id": pid,
+            "name": str(meta.get("name") or "TTS 自动播报器"),
+            "version": self._plugin_version(),
+            "author": str(meta.get("author") or ""),
+            "description": str(meta.get("description") or ""),
+            "apiVersion": str(meta.get("api_version") or meta.get("apiVersion") or ""),
+            "repo": str(meta.get("url") or ""),
+            "plaza": self._plaza_url(),
+        }
+
+    @Slot(result=dict)
+    def getUpdateState(self) -> dict:
+        state = dict(self._update_state)
+        state["current"] = self._plugin_version()
+        state["url"] = self._plaza_url()
+        return state
+
+    @Slot()
+    def checkForUpdate(self) -> None:
+        if self._update_thread is not None:
+            return
+        pid = str(self._plugin_meta().get("id") or self.pid or "")
+        if not pid:
+            self._set_update_state("error", "", "无法确定插件 ID")
+            return
+        self._set_update_state("checking", "", "")
+        thread = UpdateCheckThread(pid, self._plugin_version(), self)
+        thread.checked.connect(self._on_update_checked)
+        thread.finished.connect(self._on_update_thread_finished)
+        self._update_thread = thread
+        thread.start()
+
+    @Slot(str, str, str)
+    def _on_update_checked(self, status: str, latest: str, message: str) -> None:
+        self._set_update_state(status, latest, message)
+
+    @Slot()
+    def _on_update_thread_finished(self) -> None:
+        thread = self.sender()
+        if thread is self._update_thread:
+            self._update_thread = None
+        if thread is not None:
+            thread.deleteLater()
+
     # ---- 内部方法 ----------------------------------------------------------
+
+    def _plugin_meta(self) -> dict:
+        meta = getattr(self, "meta", None)
+        return meta if isinstance(meta, dict) else {}
+
+    def _plugin_version(self) -> str:
+        return str(self._plugin_meta().get("version") or "")
+
+    def _plaza_url(self) -> str:
+        pid = str(self._plugin_meta().get("id") or self.pid or "")
+        return PLAZA_PLUGIN_URL.format(pid=pid) if pid else ""
+
+    def _set_update_state(self, status: str, latest: str, message: str) -> None:
+        self._update_state = {
+            "status": status,
+            "latest": latest,
+            "message": message,
+        }
+        self.updateStateChanged.emit()
 
     def _init_speaker(self) -> None:
         if self._speaker is not None:
@@ -437,8 +618,12 @@ class Plugin(CW2Plugin):
         if not self._config.enabled:
             logger.debug("[TTS] 总开关已关闭, 跳过朗读")
             return
-        if payload.get("silent", False):
-            logger.debug("[TTS] 通知标记为 silent, 跳过朗读")
+        activity = resolve_activity_key(str(payload.get("provider_id") or ""))
+        if activity and not self._config.announce_types.get(activity, True):
+            logger.debug("[TTS] 场景 {} 已关闭播报, 跳过", activity)
+            return
+        if payload.get("silent", False) and not self._config.announce_silent:
+            logger.debug("[TTS] 通知标记为 silent 且未开启朗读, 跳过")
             return
 
         runtime_context = self._build_runtime_context()

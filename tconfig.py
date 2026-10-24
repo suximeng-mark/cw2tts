@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Any, Dict
 
 from loguru import logger
 from pydantic import Field
@@ -28,6 +28,21 @@ DEFAULT_TEMPLATES: Dict[str, str] = {
 }
 
 
+def coerce_bool(value: Any, default: bool = True) -> bool:
+    """把配置里五花八门的值收敛成 bool。手改配置 / 旧版本迁移是常态。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("1", "true", "yes", "on"):
+            return True
+        if text in ("0", "false", "no", "off", ""):
+            return False
+    return default
+
+
 class TTSPluginConfig(ConfigBaseModel):
     """TTS 插件配置。
 
@@ -37,6 +52,8 @@ class TTSPluginConfig(ConfigBaseModel):
     :param volume: 播放音量 0.0 ~ 1.0
     :param rate: 语速倍率，1.0 为正常，0.5~2.0
     :param templates: 各 activity 类型的朗读文案模板
+    :param announce_types: 各 activity 类型是否播报（缺省全部开启）
+    :param announce_silent: 是否朗读带 silent 标记的通知
     """
 
     enabled: bool = True
@@ -45,6 +62,10 @@ class TTSPluginConfig(ConfigBaseModel):
     volume: float = 1.0
     rate: float = 1.0
     templates: Dict[str, str] = Field(default_factory=dict)
+    # 用 Any 而不是 bool：脏配置里可能出现 None / "off" / 2，
+    # 交给 __init__ 统一收敛，避免 pydantic 校验直接抛异常导致插件加载失败。
+    announce_types: Dict[str, Any] = Field(default_factory=dict)
+    announce_silent: Any = False
 
     def __init__(self, **data):
         # 与官方模板及广场参考插件一致的写法（均在 Class Widgets 2 内实机运行过）
@@ -55,6 +76,13 @@ class TTSPluginConfig(ConfigBaseModel):
         for key, default_text in DEFAULT_TEMPLATES.items():
             if key not in self.templates:
                 self.templates[key] = default_text
+        if not isinstance(self.announce_types, dict):
+            self.announce_types = {}
+        for key in DEFAULT_TEMPLATES:
+            self.announce_types[key] = coerce_bool(
+                self.announce_types.get(key, True), True
+            )
+        self.announce_silent = coerce_bool(self.announce_silent, False)
         # 语速限幅，避免异常值导致引擎报错
         try:
             self.rate = max(0.5, min(2.0, float(self.rate)))
