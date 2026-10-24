@@ -100,6 +100,7 @@ jobs:
             _pack.log
             _pack2.log
             _preflight.log
+            _publish.log
           retention-days: 7
 
       - name: Get version from tag
@@ -113,6 +114,42 @@ jobs:
           $tag = $env:GITHUB_REF -replace '^refs/tags/v', ''
           "VERSION=$tag" >> $env:GITHUB_ENV
           Write-Host "VERSION=$tag"
+
+      - name: Publish to Plugin Plaza
+        shell: pwsh
+        env:
+          # 在仓库 Settings → Secrets and variables → Actions 中添加
+          # CWPT_TOKEN（发布令牌从 https://plaza.cw.rinlit.cn/console 获取）
+          CWPT_TOKEN: ${{ secrets.CWPT_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if (-not $env:CWPT_TOKEN) {
+            Write-Host "::warning title=publish skipped::未配置 CWPT_TOKEN，跳过插件广场发布"
+            exit 0
+          }
+
+          # 防止 tag 与清单不一致，把错误版本推到广场
+          $manifest = Get-Content ./cwplugin.json -Raw -Encoding utf8 | ConvertFrom-Json
+          if ($manifest.version -ne $env:VERSION) {
+            Write-Host "::error title=version mismatch::cwplugin.json=$($manifest.version)，tag=v$env:VERSION"
+            exit 1
+          }
+
+          # 发布只上传元数据，README / 图标 / 安装包由广场从仓库与 Release 读取，
+          # 因此必须在本步骤之前完成打包，并在此之后创建 Release。
+          cw-plugin-publish --branch "${{ github.event.repository.default_branch }}" 2>&1 |
+            Tee-Object -FilePath ./_publish.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            $err = Get-Content ./_publish.log -Raw -ErrorAction SilentlyContinue
+            if ($err) {
+              $esc = $err.Replace('%','%25').Replace("`r",'').Replace("`n",'%0A')
+              Write-Host "::error title=cw-plugin-publish failed::$esc"
+            } else {
+              Write-Host "::error title=cw-plugin-publish failed::no log captured (exit $code)"
+            }
+            exit $code
+          }
 
       - name: Generate changelog with git-cliff
         id: generate_changelog
