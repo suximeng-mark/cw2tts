@@ -18,13 +18,41 @@ import subprocess
 import sys
 import tempfile
 import threading
-import wave
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 from loguru import logger
 
 from engines.base import TTSEngine
+
+
+def write_wav_mono16(path: Path, pcm: bytes, sample_rate: int) -> None:
+    """写 16-bit 单声道 WAV。
+
+    CW2 的打包环境里没有 stdlib 的 wave 模块（PyInstaller 未收集），
+    模块级 import wave 会让整个插件加载失败，所以直接手写 RIFF 头。
+    """
+    data_size = len(pcm)
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        36 + data_size,
+        b"WAVE",
+        b"fmt ",
+        16,
+        1,
+        1,
+        sample_rate,
+        sample_rate * 2,
+        2,
+        16,
+        b"data",
+        data_size,
+    )
+    with open(path, "wb") as f:
+        f.write(header)
+        f.write(pcm)
+
 
 # 官方语音仓库（rhasspy/piper-voices, v1.0.0 为稳定分支）
 VOICE_BASE_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0"
@@ -363,11 +391,7 @@ class PiperEngine(TTSEngine):
         pcm = np.clip(audio, -1.0, 1.0)
         pcm = (pcm * 32767.0).astype("<i2")
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        with wave.open(str(out_path), "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(sr)
-            wf.writeframes(pcm.tobytes())
+        write_wav_mono16(out_path, pcm.tobytes(), sr)
         logger.debug(
             "[TTS.Piper] 合成完成: {} ({} bytes)",
             out_path,
