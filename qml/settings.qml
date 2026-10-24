@@ -7,20 +7,18 @@ import ClassWidgets.Plugins
 // ═══════════════════════════════════════════════════════════════════
 // TTS 自动播报 · 设置页
 //
-// 后端：main.py（槽函数名/参数个数/返回类型必须与下文 backend.xxx() 一致）
-// 规则来源：qml-settings-guide.md / cw-plugin-dev-guide.md
-//
+// 后端槽函数见 main.py，名称/参数/返回类型必须与 backend.xxx() 一致。
+// 关键规则：
 //   ① 所有 root.xxx 都是显式声明的 property
-//      —— Qt 6 给未声明属性赋值静默失败、读取恒为 undefined，qmllint 不报
-//   ② 所有会写后端的事件处理器，第一行 if (!root.ready) return
-//      —— 否则 Component.onCompleted 赋初值就会把设置写一遍
+//      —— Qt 6 给未声明属性赋值静默失败、读取恒为 undefined
+//   ② 所有写后端的事件处理器，第一行 if (!root.ready) return
+//      —— 否则 Component.onCompleted 赋初值会把设置写一遍
 //   ③ 结构性数据（模板列表）换新数组/新对象，字段编辑原地改
-//   ④ TextField 不在输入过程中写盘，一律失焦或回车写回
-//      —— 边打字边写盘会重建 delegate，输入框失焦、光标跳位
+//   ④ TextField 不在输入过程中写盘，失焦或回车才写回
 //   ⑤ 后端改动只走 Signal + Connections，不轮询
-//   ⑥ Switch 必须覆盖 checkedText/uncheckedText（RinUI 默认渲染 On/Off）
+//   ⑥ Switch 必须覆盖 checkedText/uncheckedText
 //
-// ⚠️ 状态属性不叫 enabled：那是 Item.enabled，被覆盖后关掉总开关
+// ⚠️ 总开关属性不叫 enabled：那是 Item.enabled，覆盖后关掉总开关
 //    会把整页控件连带禁用，用户再也点不回来。
 // ═══════════════════════════════════════════════════════════════════
 
@@ -30,20 +28,20 @@ PluginPage {
     title: qsTr("TTS 自动播报")
 
     // ═══════════════════ 状态属性 ═══════════════════
-    property bool ready: false            // 规则②：初始化守卫
-    property bool syncing: false          // 回填数据期间禁止写回后端
-    property string resultText: ""        // 统一结果提示（规则：一出口）
+    property bool ready: false
+    property bool syncing: false
+    property string resultText: ""
     property bool resultOk: true
 
-    property var engineModel: []          // [{name:"auto",available:"true"}, ...]
-    property var voiceModel: []           // [{id,name,locale}, ...]
-    property var templateKeys: []         // 结构性数据：换新数组
-    property var templateTexts: ({})      // key → 当前文案（换新对象）
+    property var engineModel: []          // [{name, available}, ...]
+    property var voiceModel: []           // [{id, name, locale}, ...]
+    property var templateKeys: []
+    property var templateTexts: ({})
 
-    property string engineId: "auto"      // 配置里选的引擎
-    property string activeEngine: "none"  // 实际在跑的引擎
+    property string engineId: "auto"
+    property string activeEngine: "none"
     property string voiceId: ""
-    property string localeId: ""          // 语音语言筛选（空 = 全部）
+    property string localeId: ""
     property real volumeValue: 1.0
     property real rateValue: 1.0
     property bool pluginEnabled: true
@@ -55,19 +53,11 @@ PluginPage {
     property int piperPercent: 0
     property string piperFileName: ""
 
-    // 「快速插入变量」的目标：最近获得焦点的模板输入框
+    // 「快速插入变量」的目标输入框
     property string editKey: ""
     property var editField: null
 
-    // ═══════════════════ 普通函数 ═══════════════════
-    // 规则③：派生 property 依赖的函数必须声明在派生属性之前。
-
-    function setResult(msg, ok) {
-        root.resultText = msg
-        root.resultOk = ok !== false
-    }
-
-    // 对照表替代 if-else 链（规则：图标/文案映射）
+    // ═══════════════════ 标签映射 ═══════════════════
     function engineLabel(id) {
         var labels = {
             "auto": qsTr("自动（推荐）"),
@@ -101,55 +91,49 @@ PluginPage {
         return icons[key] || "ic_fluent_text_description_20_regular"
     }
 
-    // ── 下标换算：越界一律回落到安全值，调用方不必自己防 ──
+    // ═══════════════════ 工具函数 ═══════════════════
+    function setResult(msg, ok) {
+        root.resultText = msg
+        root.resultOk = ok !== false
+    }
+
     function indexOfEngine(id) {
-        for (var i = 0; i < root.engineModel.length; i++) {
+        for (var i = 0; i < root.engineModel.length; i++)
             if (root.engineModel[i].name === id) return i
-        }
         return 0
     }
 
     function localesOf(list) {
-        var seen = {}
-        var out = []
+        var seen = {}, out = []
         for (var i = 0; i < list.length; i++) {
             var loc = list[i].locale || ""
-            if (loc && !seen[loc]) {
-                seen[loc] = true
-                out.push(loc)
-            }
+            if (loc && !seen[loc]) { seen[loc] = true; out.push(loc) }
         }
         out.sort()
         return out
     }
 
-    // 规则③：无筛选时也返回新数组，不把 voiceModel 的引用直接交出去
     function voicesFor(locale) {
         if (!locale) return root.voiceModel.slice()
         var out = []
-        for (var i = 0; i < root.voiceModel.length; i++) {
+        for (var i = 0; i < root.voiceModel.length; i++)
             if (root.voiceModel[i].locale === locale) out.push(root.voiceModel[i])
-        }
         return out
     }
 
     function localeOfVoice(id) {
-        for (var i = 0; i < root.voiceModel.length; i++) {
+        for (var i = 0; i < root.voiceModel.length; i++)
             if (root.voiceModel[i].id === id) return root.voiceModel[i].locale || ""
-        }
         return ""
     }
 
     function voiceLabel(id) {
-        for (var i = 0; i < root.voiceModel.length; i++) {
+        for (var i = 0; i < root.voiceModel.length; i++)
             if (root.voiceModel[i].id === id) return root.voiceModel[i].name
-        }
         return id
     }
 
-    // ── 数据拉取：每个信号只刷自己那一份，避免整页重算 ──
-    // syncing：回填期间设真，事件处理器据此跳过 —— 否则「刷新数据」
-    // 会被当成「用户改了选项」，把旧值又写回后端。
+    // ═══════════════════ 数据拉取 ═══════════════════
     function refreshEngines() {
         if (!backend) return
         root.syncing = true
@@ -184,9 +168,10 @@ PluginPage {
         if (!backend) return
         var keys = backend.getTemplateKeys()
         var texts = {}
-        for (var i = 0; i < keys.length; i++) texts[keys[i]] = backend.getTemplate(keys[i])
-        root.templateKeys = keys        // 新数组 → Repeater 重建
-        root.templateTexts = texts      // 新对象 → 绑定刷新
+        for (var i = 0; i < keys.length; i++)
+            texts[keys[i]] = backend.getTemplate(keys[i])
+        root.templateKeys = keys
+        root.templateTexts = texts
     }
 
     function refreshPiper() {
@@ -202,7 +187,7 @@ PluginPage {
         root.refreshPiper()
     }
 
-    // ── 写操作：入参当脏数据，改完发信号由后端回传真实值 ──
+    // ═══════════════════ 写操作 ═══════════════════
     function applyEngine(index) {
         if (!root.ready || root.syncing) return
         if (index < 0 || index >= root.engineModel.length) return
@@ -215,7 +200,6 @@ PluginPage {
 
     function applyLocale(index) {
         if (!root.ready || root.syncing) return
-        // 只改内存里的筛选条件，不写后端
         root.localeId = index <= 0 ? "" : (root.localeList[index] || "")
     }
 
@@ -228,7 +212,6 @@ PluginPage {
             id = list[index - 1].id
             shown = list[index - 1].name
         } else if (index === 0 && root.localeId && list.length > 0) {
-            // 选定语言后选「默认」= 该语言的第一条
             id = list[0].id
             shown = list[0].name
         }
@@ -237,7 +220,6 @@ PluginPage {
         root.setResult(qsTr("已选择语音 %1").arg(shown), true)
     }
 
-    // 规则④：只在失焦 / 回车时调用
     function commitTemplate(key, field) {
         if (!root.ready || !field) return
         var text = field.text
@@ -271,7 +253,7 @@ PluginPage {
         var t = field.text
         var pos = field.cursorPosition
         field.text = t.substring(0, pos) + token + t.substring(pos)
-        field.cursorPosition = pos + token.length     // 不写这句光标会跳到末尾
+        field.cursorPosition = pos + token.length
         field.forceActiveFocus()
         root.commitTemplate(root.editKey, field)
     }
@@ -283,7 +265,6 @@ PluginPage {
             root.setResult(qsTr("这条文案是空的，没有可朗读的内容"), false)
             return
         }
-        // 试听必须把变量填满，否则用户听到的是残缺句子，会以为模板写坏了
         text = text.replace(/\{subject\}/g, qsTr("语文"))
                    .replace(/\{teacher\}/g, qsTr("张老师"))
                    .replace(/\{location\}/g, qsTr("3号楼201"))
@@ -321,8 +302,6 @@ PluginPage {
     }
 
     // ═══════════════════ 派生属性 ═══════════════════
-    // 规则③：声明在上方所有函数之后；一次计算、多处引用。
-
     property var localeList: {
         var list = root.localesOf(root.voiceModel)
         list.unshift(qsTr("全部语言"))
@@ -338,7 +317,6 @@ PluginPage {
         return out
     }
 
-    // 「未安装」和「不可用」必须区分：前者用户能自己装，后者是环境问题
     property var engineLabels: {
         var out = []
         for (var i = 0; i < root.engineModel.length; i++) {
@@ -375,23 +353,18 @@ PluginPage {
     Component.onCompleted: {
         if (!backend) return
         root.refreshAll()
-        root.ready = true                 // 规则②：全部赋值完成后再置位
+        root.ready = true
     }
 
     // ═══════════════════ 后端信号 ═══════════════════
-    // 规则⑤：改完由后端发信号，UI 订阅即刷新；不用 Timer 轮询
     Connections {
         target: backend
         function onEngineChanged() {
             root.refreshEngines()
             root.refreshPiper()
         }
-        function onVoiceListChanged() {
-            root.refreshVoices()
-        }
-        function onConfigChanged() {
-            root.refreshConfig()
-        }
+        function onVoiceListChanged() { root.refreshVoices() }
+        function onConfigChanged() { root.refreshConfig() }
         function onModelProgressChanged(fileName, percent) {
             if (percent >= 100) {
                 root.piperDownloading = false
@@ -407,9 +380,7 @@ PluginPage {
         }
     }
 
-    // ═══════════════════════════════════════════
-    // 总开关
-    // ═══════════════════════════════════════════
+    // ═══════════════════ 总开关 ═══════════════════
     ColumnLayout {
         Layout.fillWidth: true
         spacing: 4
@@ -427,22 +398,20 @@ PluginPage {
             Switch {
                 id: enableSwitch
                 checked: root.pluginEnabled
-                // 规则⑥：RinUI 的 Switch 默认渲染 On/Off
                 checkedText: qsTr("开")
                 uncheckedText: qsTr("关")
                 onToggled: {
                     if (!root.ready || root.syncing) return
                     root.pluginEnabled = checked
                     backend.setEnabled(checked)
-                    root.setResult(checked ? qsTr("已开启自动播报") : qsTr("已关闭自动播报"), true)
+                    root.setResult(
+                        checked ? qsTr("已开启自动播报") : qsTr("已关闭自动播报"), true)
                 }
             }
         }
     }
 
-    // ═══════════════════════════════════════════
-    // 引擎与语音
-    // ═══════════════════════════════════════════
+    // ═══════════════════ 引擎与语音 ═══════════════════
     ColumnLayout {
         Layout.fillWidth: true
         spacing: 4
@@ -484,9 +453,8 @@ PluginPage {
                     model: root.localeList
                     currentIndex: {
                         if (!root.localeId) return 0
-                        for (var i = 1; i < root.localeList.length; i++) {
+                        for (var i = 1; i < root.localeList.length; i++)
                             if (root.localeList[i] === root.localeId) return i
-                        }
                         return 0
                     }
                     onCurrentIndexChanged: root.applyLocale(currentIndex)
@@ -498,9 +466,8 @@ PluginPage {
                     model: root.voiceLabels
                     currentIndex: {
                         if (!root.voiceId) return 0
-                        for (var i = 0; i < root.filteredVoices.length; i++) {
+                        for (var i = 0; i < root.filteredVoices.length; i++)
                             if (root.filteredVoices[i].id === root.voiceId) return i + 1
-                        }
                         return 0
                     }
                     onCurrentIndexChanged: root.applyVoice(currentIndex)
@@ -520,9 +487,7 @@ PluginPage {
         }
     }
 
-    // ═══════════════════════════════════════════
-    // 离线模型
-    // ═══════════════════════════════════════════
+    // ═══════════════════ 离线模型 ═══════════════════
     ColumnLayout {
         Layout.fillWidth: true
         spacing: 4
@@ -546,7 +511,6 @@ PluginPage {
                 onClicked: root.startDownload()
             }
 
-            // SettingItem 的默认属性就是右侧内容区，控件直接放进去即可
             SettingItem {
                 title: qsTr("下载进度")
                 description: root.piperDownloading
@@ -575,9 +539,7 @@ PluginPage {
         }
     }
 
-    // ═══════════════════════════════════════════
-    // 播放设置
-    // ═══════════════════════════════════════════
+    // ═══════════════════ 播放设置 ═══════════════════
     ColumnLayout {
         Layout.fillWidth: true
         spacing: 4
@@ -672,11 +634,8 @@ PluginPage {
                 id: testField
                 Layout.preferredWidth: 260
                 placeholderText: qsTr("同学们好，现在开始上课。")
-                // 规则④：只在失焦/回车写本地状态，不写磁盘
                 text: root.testText
-                onTextChanged: {
-                    if (activeFocus) root.testText = text
-                }
+                onTextChanged: { if (activeFocus) root.testText = text }
                 onEditingFinished: root.testText = text
             }
         }
@@ -689,9 +648,7 @@ PluginPage {
         }
     }
 
-    // ═══════════════════════════════════════════
-    // 朗读文案
-    // ═══════════════════════════════════════════
+    // ═══════════════════ 朗读文案 ═══════════════════
     ColumnLayout {
         Layout.fillWidth: true
         spacing: 4
@@ -736,7 +693,6 @@ PluginPage {
             }
         }
 
-        // 规则③：模板列表是结构性数据，model 只认 root.templateKeys 这个数组
         Repeater {
             model: root.templateKeys
 
@@ -759,7 +715,6 @@ PluginPage {
                         TextField {
                             id: templateField
                             Layout.preferredWidth: 300
-                            // 规则④：显示值来自 QML 唯一副本，失焦/回车才写后端
                             text: root.templateTexts[templateExpander.modelData] || ""
                             placeholderText: backend
                                 ? backend.getDefaultTemplate(templateExpander.modelData) : ""
@@ -772,9 +727,8 @@ PluginPage {
                                     root.commitTemplate(templateExpander.modelData, templateField)
                                 }
                             }
-                            onEditingFinished: {
+                            onEditingFinished:
                                 root.commitTemplate(templateExpander.modelData, templateField)
-                            }
                         }
 
                         ToolButton {
@@ -796,9 +750,7 @@ PluginPage {
         }
     }
 
-    // ═══════════════════════════════════════════
-    // 结果提示（全页唯一出口）
-    // ═══════════════════════════════════════════
+    // ═══════════════════ 结果提示 ═══════════════════
     ColumnLayout {
         Layout.fillWidth: true
         spacing: 4
