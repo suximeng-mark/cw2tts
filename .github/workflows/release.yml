@@ -121,6 +121,9 @@ jobs:
           # 在仓库 Settings → Secrets and variables → Actions 中添加
           # CWPT_TOKEN（发布令牌从 https://plaza.cw.rinlit.cn/console 获取）
           CWPT_TOKEN: ${{ secrets.CWPT_TOKEN }}
+          # runner 控制台默认 cp1252，cw-plugin-publish 输出中文会抛
+          # UnicodeEncodeError 并中止发布（v1.1.6 重跑即因此失败）。
+          PYTHONIOENCODING: utf-8
         run: |
           $ErrorActionPreference = 'Continue'
           if (-not $env:CWPT_TOKEN) {
