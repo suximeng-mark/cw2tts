@@ -18,11 +18,13 @@ import subprocess
 import sys
 import tempfile
 import threading
+import uuid
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 from loguru import logger
 
+from audio_paths import is_permission_error
 from engines.base import TTSEngine
 
 
@@ -86,6 +88,9 @@ class PiperEngine(TTSEngine):
 
     name = "piper"
 
+    # 缓存目录只探测一次；不可写时回退到系统 TEMP 下的用户目录
+    _DATA_DIR: Optional[Path] = None
+
     def __init__(self, voice: str = "zh_CN-huayan-medium") -> None:
         self._voice_id = voice or self.BUILTIN_DEFAULT
         self._model: object = None
@@ -107,15 +112,39 @@ class PiperEngine(TTSEngine):
 
     @staticmethod
     def get_data_dir() -> Path:
-        """模型缓存目录（用户可写）。"""
+        """模型缓存目录：优先 LOCALAPPDATA，实测不可写时回退系统 TEMP。
+
+        mkdir(exist_ok=True) 对 ACL 错误的目录也会「假成功」，必须真写一次。
+        """
+        if PiperEngine._DATA_DIR is not None:
+            return PiperEngine._DATA_DIR
+
+        candidates: List[Path] = []
         base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME")
         if base:
-            root = Path(base)
+            candidates.append(Path(base) / "CW2TTS" / "piper")
         else:
-            root = Path.home() / ".local" / "share"
-        d = root / "CW2TTS" / "piper"
-        d.mkdir(parents=True, exist_ok=True)
-        return d
+            candidates.append(Path.home() / ".local" / "share" / "CW2TTS" / "piper")
+        temp_root = Path(tempfile.gettempdir())
+        candidates.append(temp_root / "CW2TTS" / "piper")
+        candidates.append(temp_root / "CW2TTS_Piper")
+
+        for directory in candidates:
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+                probe = directory / f".probe_{uuid.uuid4().hex}"
+                probe.write_bytes(b"")
+                probe.unlink(missing_ok=True)
+                PiperEngine._DATA_DIR = directory
+                logger.debug("[TTS.Piper] 模型缓存目录: {}", directory)
+                return directory
+            except Exception as e:
+                logger.warning("[TTS.Piper] 模型目录不可写 {}: {}", directory, e)
+
+        # 全失败：返回首选目录，让下载/加载阶段抛出可定位的权限错误
+        PiperEngine._DATA_DIR = candidates[0]
+        logger.warning("[TTS.Piper] 所有模型目录候选均不可写: {}", PiperEngine._DATA_DIR)
+        return PiperEngine._DATA_DIR
 
     @classmethod
     def _voice_files(cls, voice_id: str) -> Optional[Tuple[str, str, str, str, str]]:
@@ -209,7 +238,13 @@ class PiperEngine(TTSEngine):
                                 progress(url.rsplit("/", 1)[-1], int(done * 100 / total) if total else 0)
             except Exception as e:
                 tmp.unlink(missing_ok=True)
-                raise RuntimeError(f"模型下载失败: {url} — {e}") from e
+                hint = ""
+                if is_permission_error(e):
+                    hint = (
+                        f"（目录不可写：{d}；请检查杀软/受控文件夹访问，"
+                        "或确认 CW2 与首次下载时是同一用户运行）"
+                    )
+                raise RuntimeError(f"模型下载失败: {url} — {e}{hint}") from e
             tmp.replace(dest)
         logger.info("[TTS.Piper] 模型就绪: {}", onnx_path)
         return onnx_path
@@ -359,7 +394,14 @@ class PiperEngine(TTSEngine):
 
     def synthesize(self, text: str, out_path: Path) -> None:
         logger.debug("[TTS.Piper] 开始合成, 文本长度={}", len(text))
-        self._load()
+        try:
+            self._load()
+        except Exception as e:
+            if is_permission_error(e):
+                raise RuntimeError(
+                    f"Piper 模型无法访问（{self.get_data_dir()}）：{e}"
+                ) from e
+            raise
         import numpy as np
 
         phonemes = self._phonemize(text)

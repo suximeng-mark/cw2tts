@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import queue
-import tempfile
-import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 from loguru import logger
 from PySide6.QtCore import QObject, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 
+from audio_paths import (
+    get_audio_dir,
+    invalidate_audio_dir,
+    is_permission_error,
+    new_audio_path,
+)
 from engines.base import TTSEngine
 
 
@@ -87,20 +91,39 @@ class SynthesisThread(QThread):
     def _synthesize(self, text: str) -> None:
         tmp_path: Optional[Path] = None
         try:
-            suffix = ".mp3" if self._engine.name == "edge" else ".wav"
-            tmp_path = (
-                Path(tempfile.gettempdir())
-                / f"cw2_tts_{self._engine.name}_{uuid.uuid4().hex}{suffix}"
-            )
-            self._engine.synthesize(text, tmp_path)
+            failed_dir: Optional[Path] = None
+            for attempt in range(3):
+                tmp_path = new_audio_path(self._engine.name, exclude=failed_dir)
+                try:
+                    self._engine.synthesize(text, tmp_path)
+                    break
+                except Exception as e:
+                    if not is_permission_error(e):
+                        raise
+                    # 目录被拒（杀软/ACL/占用）：换下一个候选目录重试
+                    failed_dir = tmp_path.parent
+                    logger.warning(
+                        "[TTS.Speaker] 音频目录 {} 写入被拒，换目录重试 ({}/2): {}",
+                        failed_dir, attempt + 1, e,
+                    )
+                    try:
+                        tmp_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    tmp_path = None
+                    invalidate_audio_dir(failed_dir)
+            else:
+                raise RuntimeError(
+                    f"所有音频目录均不可写（最后尝试 {get_audio_dir()}），无法合成语音"
+                )
             if self.isInterruptionRequested():
                 return
             self.playRequested.emit(str(tmp_path))
             tmp_path = None
         except Exception as e:
             logger.error("[TTS.Speaker] 朗读失败: {}", e)
+            # 不再清空队列：一次失败不应吞掉后续通知，交给故障转移逐条处理
             if not self.isInterruptionRequested():
-                self._clear_requests()
                 self.synthesisFailed.emit(self._engine.name, text, str(e))
         finally:
             if tmp_path is not None:
@@ -124,7 +147,12 @@ class Speaker(QObject):
 
         self._player: Optional[QMediaPlayer] = None
         self._audio_output: Optional[QAudioOutput] = None
-        self._pending_cleanup: Optional[Path] = None
+        # (播放代数, 音频路径)：代数不匹配说明已被新播放取代，避免误删新音频
+        self._play_generation = 0
+        self._pending_cleanup: Optional[Tuple[int, Path]] = None
+        # 切换播放时主动 stop 会产生一次 StoppedState；只忽略那一特定信号，
+        # 不能用时间窗口——窗口会把新音频自然结束的信号也吞掉（临时文件残留）。
+        self._suppress_next_stop = False
         self._init_player()
 
         self._worker = SynthesisThread(engine, self)
@@ -141,14 +169,30 @@ class Speaker(QObject):
         self._audio_output.setVolume(self._volume)
         self._player.setAudioOutput(self._audio_output)
         self._player.playbackStateChanged.connect(self._on_playback_state_changed)
+        self._player.errorOccurred.connect(self._on_play_error)
 
     def _on_playback_state_changed(self, state: QMediaPlayer.PlaybackState) -> None:
-        if state == QMediaPlayer.PlaybackState.StoppedState and self._pending_cleanup is not None:
-            tmp = self._pending_cleanup
-            self._pending_cleanup = None
-            if self._player is not None:
-                self._player.setSource(QUrl())  # 先卸载 source 释放文件句柄
-            QTimer.singleShot(250, lambda: self._safe_unlink(tmp))
+        if state != QMediaPlayer.PlaybackState.StoppedState:
+            return
+        if self._suppress_next_stop:
+            # 切换播放时 stop() 产生的那一次停止：旧文件已在 _play_file 里清理
+            self._suppress_next_stop = False
+            return
+        pending = self._pending_cleanup
+        if pending is None:
+            return
+        generation, tmp = pending
+        self._pending_cleanup = None
+        if generation != self._play_generation:
+            # 旧播放停止信号晚到：旧文件已由 _play_file 主动清理，别动当前音频
+            return
+        if self._player is not None:
+            self._player.setSource(QUrl())  # 先卸载 source 释放文件句柄
+        QTimer.singleShot(250, lambda: self._safe_unlink(tmp))
+
+    def _on_play_error(self, error, message: str) -> None:
+        """音频设备被独占/文件被锁时给出可定位的日志，不误报为 TTS 权限问题。"""
+        logger.warning("[TTS.Speaker] 播放失败: error={}, message={}", error, message)
 
     def _safe_unlink(self, path: Path, retries: int = 8) -> None:
         try:
@@ -208,6 +252,10 @@ class Speaker(QObject):
             try:
                 self._player.stop()
                 self._player.setSource(QUrl())
+                pending = self._pending_cleanup
+                self._pending_cleanup = None
+                if pending is not None:
+                    self._safe_unlink(pending[1])
             except Exception as e:
                 logger.warning("[TTS.Speaker] 停止播放异常: {}", e)
         if not self._worker.wait(30000):
@@ -219,9 +267,23 @@ class Speaker(QObject):
         if self._stopped or self._player is None:
             self._safe_unlink(audio_path)
             return
+
+        # 主动清理上一条遗留；不能只靠 StoppedState，异步信号会误清新 source
+        pending = self._pending_cleanup
+        if pending is not None:
+            self._pending_cleanup = None
+            self._safe_unlink(pending[1])
+
+        self._play_generation += 1
         if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
-            self._player.stop()
-        self._pending_cleanup = audio_path
+            self._suppress_next_stop = True
+            try:
+                self._player.stop()
+            except Exception as e:
+                self._suppress_next_stop = False
+                logger.warning("[TTS.Speaker] 停止上一段播放失败: {}", e)
+
+        self._pending_cleanup = (self._play_generation, audio_path)
         if self._audio_output is not None:
             self._audio_output.setVolume(self._volume)
         self._player.setSource(QUrl.fromLocalFile(str(audio_path)))

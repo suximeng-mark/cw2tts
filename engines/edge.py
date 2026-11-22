@@ -69,7 +69,20 @@ class EdgeTTSEngine(TTSEngine):
             connect_timeout=8,
             receive_timeout=20,
         )
-        await communicate.save(str(out_path))
+        try:
+            await communicate.save(str(out_path))
+        except Exception as e:
+            status = getattr(e, "status", None)
+            response = getattr(e, "response", None)
+            if status is None and response is not None:
+                status = getattr(response, "status", None)
+            if status == 403 or "403" in str(e):
+                # 网络策略/代理返回 403，常被误读成「权限不足」；明确文案便于定位
+                raise RuntimeError(
+                    "在线语音服务拒绝访问（HTTP 403，多为代理/校园网/公司网络策略拦截），"
+                    "将自动切换离线引擎"
+                ) from e
+            raise
         logger.debug(
             "[TTS.Edge] 合成完成: {} ({} bytes)",
             out_path,

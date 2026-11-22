@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+import re
+from typing import Any, Dict, List
 
 from loguru import logger
 from pydantic import Field
@@ -26,6 +27,42 @@ DEFAULT_TEMPLATES: Dict[str, str] = {
     "free": "放学了",
     "preparation": "预备铃，下节课是{next_subject}",
 }
+
+# 禁播科目作用范围：related=当前或下节 / current=仅当前 / next=仅下节
+MUTED_SCOPES = ("related", "current", "next")
+
+
+def normalize_subject_name(value: Any) -> str:
+    """科目名归一化：全角空格转半角、去掉全部空白、忽略大小写差异由调用方处理。"""
+    if value is None:
+        return ""
+    text = str(value).replace("\u3000", " ")
+    return "".join(text.split())
+
+
+def normalize_subject_names(values: Any) -> List[str]:
+    """把配置里的禁播科目收敛成去重后的字符串列表。
+
+    兼容脏配置：None / 字符串（逗号、顿号、分号或换行分隔）/ 非列表容器。
+    """
+    if isinstance(values, str):
+        candidates: List[Any] = re.split(r"[,，;；、\r\n]+", values)
+    elif isinstance(values, (list, tuple, set)):
+        candidates = list(values)
+    else:
+        return []
+    out: List[str] = []
+    seen = set()
+    for item in candidates:
+        if not isinstance(item, str):
+            continue
+        name = normalize_subject_name(item)
+        key = name.casefold()
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+    return out
 
 
 def coerce_bool(value: Any, default: bool = True) -> bool:
@@ -54,6 +91,8 @@ class TTSPluginConfig(ConfigBaseModel):
     :param templates: 各 activity 类型的朗读文案模板
     :param announce_types: 各 activity 类型是否播报（缺省全部开启）
     :param announce_silent: 是否朗读带 silent 标记的通知
+    :param muted_subjects: 不播报的科目名列表（按名称匹配，支持手动添加）
+    :param muted_scope: 科目匹配范围 related / current / next
     """
 
     enabled: bool = True
@@ -66,6 +105,9 @@ class TTSPluginConfig(ConfigBaseModel):
     # 交给 __init__ 统一收敛，避免 pydantic 校验直接抛异常导致插件加载失败。
     announce_types: Dict[str, Any] = Field(default_factory=dict)
     announce_silent: Any = False
+    # 配置由主程序全量反序列化，脏值同样先收下再归一化。
+    muted_subjects: Any = Field(default_factory=list)
+    muted_scope: Any = "related"
 
     def __init__(self, **data):
         # 与官方模板及广场参考插件一致的写法（均在 Class Widgets 2 内实机运行过）
@@ -83,16 +125,22 @@ class TTSPluginConfig(ConfigBaseModel):
                 self.announce_types.get(key, True), True
             )
         self.announce_silent = coerce_bool(self.announce_silent, False)
+        self.muted_subjects = normalize_subject_names(self.muted_subjects)
+        scope = str(self.muted_scope or "").strip().lower()
+        self.muted_scope = scope if scope in MUTED_SCOPES else "related"
         # 语速限幅，避免异常值导致引擎报错
         try:
             self.rate = max(0.5, min(2.0, float(self.rate)))
         except (TypeError, ValueError):
             self.rate = 1.0
         logger.debug(
-            "[TTS.Config] 创建, enabled={}, engine={}, voice={}, volume={}, rate={}",
+            "[TTS.Config] 创建, enabled={}, engine={}, voice={}, volume={}, rate={}, "
+            "muted_subjects={}, muted_scope={}",
             self.enabled,
             self.engine,
             self.voice,
             self.volume,
             self.rate,
+            len(self.muted_subjects),
+            self.muted_scope,
         )

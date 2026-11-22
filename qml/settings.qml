@@ -55,6 +55,10 @@ PluginPage {
     property int announceRev: 0
     property bool announceSilent: false
 
+    // 指定科目不播报：[{name, muted, custom}, ...]
+    property var subjectItems: []
+    property string mutedScope: "related"
+
     // Piper 离线模型三态：unavailable / missing / ready
     property string piperState: "unavailable"
     property bool piperDownloading: false
@@ -162,6 +166,17 @@ PluginPage {
         return id
     }
 
+    function scopeKey(index) {
+        if (index === 1) return "current"
+        if (index === 2) return "next"
+        return "related"
+    }
+
+    function scopeLabel(key) {
+        var index = key === "current" ? 1 : (key === "next" ? 2 : 0)
+        return root.scopeLabels[index]
+    }
+
     // ═══════════════════ 数据拉取 ═══════════════════
     function refreshEngines() {
         if (!backend) return
@@ -227,6 +242,22 @@ PluginPage {
         root.syncing = false
     }
 
+    function refreshSubjects() {
+        if (!backend) return
+        root.syncing = true
+        var items = backend.getSubjectList()
+        var out = []
+        for (var i = 0; i < items.length; i++)
+            out.push({
+                name: items[i].name,
+                muted: !!items[i].muted,
+                custom: !!items[i].custom
+            })
+        root.subjectItems = out
+        root.mutedScope = backend.getMutedScope()
+        root.syncing = false
+    }
+
     function refreshAbout() {
         if (!backend) return
         root.pluginInfo = backend.getPluginInfo()
@@ -240,6 +271,7 @@ PluginPage {
         root.refreshTemplates()
         root.refreshPiper()
         root.refreshAnnounce()
+        root.refreshSubjects()
         root.refreshAbout()
     }
 
@@ -365,6 +397,53 @@ PluginPage {
             : qsTr("已跳过静音通知"), true)
     }
 
+    function setSubjectMuted(name, muted) {
+        if (!root.ready || root.syncing) return
+        backend.setSubjectMuted(name, muted)
+        // 结构性数据换新数组，保证 Repeater 的 checked 绑定拿到新值
+        var out = []
+        for (var i = 0; i < root.subjectItems.length; i++) {
+            var it = root.subjectItems[i]
+            out.push({
+                name: it.name,
+                muted: it.name === name ? muted : it.muted,
+                custom: it.custom
+            })
+        }
+        root.subjectItems = out
+        root.setResult(muted
+            ? qsTr("已跳过「%1」的播报").arg(name)
+            : qsTr("已恢复「%1」的播报").arg(name), true)
+    }
+
+    function addSubject(text) {
+        if (!root.ready || root.syncing) return
+        var names = (text || "").trim()
+        if (!names) {
+            root.setResult(qsTr("请先输入科目名称"), false)
+            return
+        }
+        backend.addMutedSubject(names)
+        root.refreshSubjects()
+        root.setResult(qsTr("已添加「%1」，相关播报将跳过").arg(names), true)
+    }
+
+    function removeSubject(name) {
+        if (!root.ready || root.syncing) return
+        backend.removeMutedSubject(name)
+        root.refreshSubjects()
+        root.setResult(qsTr("已移除「%1」").arg(name), true)
+    }
+
+    function applyMutedScope(index) {
+        if (!root.ready || root.syncing) return
+        var key = root.scopeKey(index)
+        if (key === root.mutedScope) return
+        backend.setMutedScope(key)
+        root.mutedScope = key
+        root.setResult(qsTr("科目匹配范围：%1").arg(root.scopeLabel(key)), true)
+    }
+
     function startDownload() {
         if (!backend) return
         root.piperDownloading = true
@@ -389,6 +468,37 @@ PluginPage {
     }
 
     // ═══════════════════ 派生属性 ═══════════════════
+    property var scopeLabels: [
+        qsTr("当前课或下节课"), qsTr("仅当前科目"), qsTr("仅下节课")
+    ]
+
+    property int scopeIndex: {
+        if (root.mutedScope === "current") return 1
+        if (root.mutedScope === "next") return 2
+        return 0
+    }
+
+    property int mutedSubjectCount: {
+        var count = 0
+        for (var i = 0; i < root.subjectItems.length; i++)
+            if (root.subjectItems[i].muted) count++
+        return count
+    }
+
+    property int scheduleSubjectCount: {
+        var count = 0
+        for (var i = 0; i < root.subjectItems.length; i++)
+            if (!root.subjectItems[i].custom) count++
+        return count
+    }
+
+    property string subjectDescription: {
+        if (root.subjectItems.length === 0)
+            return qsTr("未读取到课表科目，可手动添加")
+        return qsTr("课表共 %1 个科目 · 已跳过 %2 个")
+            .arg(root.scheduleSubjectCount).arg(root.mutedSubjectCount)
+    }
+
     property var localeList: {
         var list = root.localesOf(root.voiceModel)
         list.unshift(qsTr("全部语言"))
@@ -501,6 +611,13 @@ PluginPage {
             root.piperDownloading = true
             root.piperPercent = percent
             root.piperFileName = fileName
+        }
+        function onModelErrorChanged(message) {
+            root.piperDownloading = false
+            root.piperPercent = 0
+            root.piperFileName = ""
+            root.refreshPiper()
+            root.setResult(qsTr("模型下载失败：%1").arg(message || qsTr("未知错误")), false)
         }
     }
 
@@ -807,6 +924,97 @@ PluginPage {
                                 if (!root.ready || root.syncing) return
                                 root.setAnnounce(announceItem.modelData.key, checked)
                             }
+                        }
+                    }
+                }
+            }
+        }
+
+        SettingExpander {
+            Layout.fillWidth: true
+            icon.name: "ic_fluent_book_20_regular"
+            title: qsTr("指定科目不播报")
+            description: root.subjectDescription
+
+            action: Button {
+                text: qsTr("刷新")
+                icon.name: "ic_fluent_arrow_sync_20_regular"
+                onClicked: {
+                    root.refreshSubjects()
+                    root.setResult(qsTr("已重新读取课表科目"), true)
+                }
+            }
+
+            SettingItem {
+                title: qsTr("作用范围")
+                description: qsTr("命中名单的科目跳过该条播报；课表无科目信息时按通知正文匹配")
+
+                ComboBox {
+                    id: mutedScopeCombo
+                    width: 200
+                    model: root.scopeLabels
+                    currentIndex: root.scopeIndex
+                    onCurrentIndexChanged: root.applyMutedScope(currentIndex)
+                }
+            }
+
+            Repeater {
+                model: root.subjectItems
+
+                SettingItem {
+                    id: subjectItem
+                    required property int index
+                    required property var modelData
+
+                    title: subjectItem.modelData.name
+                    description: subjectSwitch.checked
+                        ? qsTr("跳过播报") : qsTr("正常朗读")
+
+                    RowLayout {
+                        spacing: 8
+
+                        Switch {
+                            id: subjectSwitch
+                            checked: subjectItem.modelData.muted
+                            checkedText: qsTr("跳过")
+                            uncheckedText: qsTr("朗读")
+                            onToggled: {
+                                if (!root.ready || root.syncing) return
+                                root.setSubjectMuted(subjectItem.modelData.name, checked)
+                            }
+                        }
+
+                        Button {
+                            visible: !!subjectItem.modelData.custom
+                            text: qsTr("移除")
+                            onClicked: root.removeSubject(subjectItem.modelData.name)
+                        }
+                    }
+                }
+            }
+
+            SettingItem {
+                title: qsTr("添加科目")
+                description: qsTr("课表外的科目可手动输入，多个名称用逗号或顿号分隔")
+
+                RowLayout {
+                    spacing: 8
+
+                    TextField {
+                        id: subjectField
+                        Layout.preferredWidth: 220
+                        placeholderText: qsTr("如：自习、班会")
+                        onAccepted: {
+                            root.addSubject(subjectField.text)
+                            subjectField.text = ""
+                        }
+                    }
+
+                    Button {
+                        text: qsTr("添加")
+                        onClicked: {
+                            root.addSubject(subjectField.text)
+                            subjectField.text = ""
                         }
                     }
                 }

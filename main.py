@@ -10,6 +10,7 @@ pyttsx3（跨平台离线），统一由 QMediaPlayer 播放音频。
 - 自选 Voice
 - 按 activity 自定义朗读文本模板
 - 音量调节
+- 指定科目不播报（当前/下节科目匹配，支持自定义科目名）
 """
 
 from __future__ import annotations
@@ -25,10 +26,21 @@ from PySide6.QtCore import QThread, Signal, Slot
 
 from ClassWidgets.SDK import CW2Plugin, PluginAPI
 
-from announcer import build_announce_text, resolve_activity_key
+from announcer import (
+    build_announce_text,
+    find_muted_in_text,
+    find_muted_subject,
+    resolve_activity_key,
+)
 from engines import create_engine, list_available_engines, list_voices_for_engine
 from speaker import Speaker
-from tconfig import DEFAULT_TEMPLATES, TTSPluginConfig
+from tconfig import (
+    DEFAULT_TEMPLATES,
+    MUTED_SCOPES,
+    TTSPluginConfig,
+    normalize_subject_name,
+    normalize_subject_names,
+)
 
 PLAZA_VERSIONS_API = "https://plaza.cw.rinlit.cn/api/plugins/versions"
 PLAZA_PLUGIN_URL = "https://plaza.cw.rinlit.cn/plugins/{pid}"
@@ -146,6 +158,7 @@ class Plugin(CW2Plugin):
     voiceListChanged = Signal()
     configChanged = Signal()
     modelProgressChanged = Signal(str, int)
+    modelErrorChanged = Signal(str)
     updateStateChanged = Signal()
 
     def __init__(self, api: PluginAPI) -> None:
@@ -444,6 +457,7 @@ class Plugin(CW2Plugin):
             self.engineChanged.emit()
         else:
             logger.warning("[TTS] Piper 模型下载失败: {}", message)
+            self.modelErrorChanged.emit(message)
 
     @Slot()
     def _on_model_thread_finished(self) -> None:
@@ -479,6 +493,89 @@ class Plugin(CW2Plugin):
     @Slot(bool)
     def setAnnounceSilent(self, enabled: bool) -> None:
         self._config.announce_silent = bool(enabled)
+        self._save_config()
+        self.configChanged.emit()
+
+    # ---- 按科目过滤 --------------------------------------------------------
+
+    @Slot(result=list)
+    def getSubjectList(self) -> list:
+        """返回 [{name, muted, custom}]：课表科目 + 名单里额外的自定义科目。"""
+        schedule_names = self._schedule_subject_names()
+        muted = list(self._config.muted_subjects)
+        muted_keys = {name.casefold() for name in muted}
+        schedule_keys = {name.casefold() for name in schedule_names}
+        items = [
+            {"name": name, "muted": name.casefold() in muted_keys, "custom": False}
+            for name in schedule_names
+        ]
+        # 课表里已不存在的历史/手填项仍显示，便于删除
+        items.extend(
+            {"name": name, "muted": True, "custom": True}
+            for name in muted
+            if name.casefold() not in schedule_keys
+        )
+        return items
+
+    @Slot(str, bool)
+    def setSubjectMuted(self, name: str, muted: bool) -> None:
+        name = normalize_subject_name(name)
+        if not name:
+            return
+        key = name.casefold()
+        current = [
+            item for item in self._config.muted_subjects
+            if item.casefold() != key
+        ]
+        if muted:
+            current.append(name)
+        self._config.muted_subjects = normalize_subject_names(current)
+        self._save_config()
+        self.configChanged.emit()
+        logger.debug("[TTS] 科目 {} 播报状态: {}", name, "跳过" if muted else "朗读")
+
+    @Slot(str, result=bool)
+    def addMutedSubject(self, names: str) -> bool:
+        """批量加入禁播名单，支持逗号/顿号/分号/换行分隔。"""
+        parsed = normalize_subject_names(names)
+        if not parsed:
+            return False
+        current = list(self._config.muted_subjects)
+        for name in parsed:
+            key = name.casefold()
+            current = [item for item in current if item.casefold() != key]
+            current.append(name)
+        self._config.muted_subjects = normalize_subject_names(current)
+        self._save_config()
+        self.configChanged.emit()
+        return True
+
+    @Slot(str)
+    def removeMutedSubject(self, name: str) -> None:
+        name = normalize_subject_name(name)
+        if not name:
+            return
+        key = name.casefold()
+        self._config.muted_subjects = [
+            item for item in self._config.muted_subjects
+            if item.casefold() != key
+        ]
+        self._save_config()
+        self.configChanged.emit()
+
+    @Slot(result=str)
+    def getMutedScope(self) -> str:
+        return self._config.muted_scope
+
+    @Slot(str)
+    def setMutedScope(self, scope: str) -> None:
+        scope = str(scope or "").strip().lower()
+        if scope not in MUTED_SCOPES:
+            logger.warning("[TTS] 未知科目匹配范围: {}", scope)
+            return
+        if scope == self._config.muted_scope:
+            return
+        self._config.muted_scope = scope
         self._save_config()
         self.configChanged.emit()
 
@@ -627,6 +724,11 @@ class Plugin(CW2Plugin):
             return
 
         runtime_context = self._build_runtime_context()
+        muted_hit = self._muted_subject_hit(payload, activity, runtime_context)
+        if muted_hit:
+            logger.info("[TTS] 科目 {!r} 已设为不播报, 跳过", muted_hit)
+            return
+
         text = build_announce_text(
             payload,
             templates=self._config.templates,
@@ -635,6 +737,60 @@ class Plugin(CW2Plugin):
         logger.debug("[TTS] 构建朗读文案: {!r}", text)
         if text:
             self._speaker.speak(text)
+
+    def _schedule_subject_names(self) -> list:
+        """从当前课表读取科目名，按出现顺序去重。"""
+        names: list = []
+        seen = set()
+        try:
+            data = self.api.schedule.get()
+            raw = getattr(data, "subjects", None)
+            if raw is None and isinstance(data, dict):
+                raw = data.get("subjects")
+            for item in raw or []:
+                sd = item.model_dump() if hasattr(item, "model_dump") else item
+                if not isinstance(sd, dict):
+                    continue
+                name = normalize_subject_name(
+                    sd.get("name") or sd.get("simplifiedName") or ""
+                )
+                key = name.casefold()
+                if name and key not in seen:
+                    seen.add(key)
+                    names.append(name)
+        except Exception as e:
+            logger.debug("[TTS] 读取课表科目失败: {}", e)
+        return names
+
+    def _muted_subject_hit(
+        self, payload: dict, activity: Optional[str], ctx: dict
+    ) -> Optional[str]:
+        """返回本次通知命中的禁播科目；无需过滤时返回 None。
+
+        runtime 有科目信息时以它为准；否则退回通知标题/正文做文本匹配。
+        放学通知与具体科目无关，直接放行；非日程类通知只做文本匹配。
+        """
+        if activity == "free":
+            return None
+        muted = list(self._config.muted_subjects)
+        if not muted:
+            return None
+
+        scope = self._config.muted_scope
+        candidates: list = []
+        if activity is not None:
+            if scope in ("related", "current"):
+                candidates.append(ctx.get("subject", ""))
+            if scope in ("related", "next"):
+                candidates.append(ctx.get("next_subject", ""))
+
+        hit = find_muted_subject(candidates, muted)
+        if hit:
+            return hit
+        if not any(normalize_subject_name(value) for value in candidates):
+            text = f"{payload.get('title') or ''} {payload.get('message') or ''}"
+            return find_muted_in_text(text, muted)
+        return None
 
     def _build_runtime_context(self) -> dict:
         """从 RuntimeAPI 提取当前/下一节课程的结构化信息。"""

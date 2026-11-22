@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict, Iterable, Optional
 
 from loguru import logger
 
-from tconfig import DEFAULT_TEMPLATES
+from tconfig import (
+    DEFAULT_TEMPLATES,
+    normalize_subject_name,
+    normalize_subject_names,
+)
 
 # provider_id 后缀 → activity key
 _PROVIDER_SUFFIX_MAP: Dict[str, str] = {
@@ -28,6 +32,35 @@ def resolve_activity_key(provider_id: str) -> Optional[str]:
     for suffix, key in _PROVIDER_SUFFIX_MAP.items():
         if provider_id.endswith(suffix):
             return key
+    return None
+
+
+def find_muted_subject(values: Iterable, muted_subjects) -> Optional[str]:
+    """在候选科目名里查找命中的禁播项。
+
+    匹配规则（忽略大小写与空白）：候选与名单项相等，或名单项是候选的子串。
+    这样「数学」也能覆盖课表里「数学（理科）」之类的写法。
+    命中时返回名单里的原始写法，便于日志与提示。
+    """
+    for value in values:
+        candidate = normalize_subject_name(value).casefold()
+        if not candidate:
+            continue
+        for name in normalize_subject_names(muted_subjects):
+            key = name.casefold()
+            if candidate == key or key in candidate:
+                return name
+    return None
+
+
+def find_muted_in_text(text, muted_subjects) -> Optional[str]:
+    """文本兜底：runtime 拿不到科目名时，检查通知标题/正文是否提到禁播科目。"""
+    body = normalize_subject_name(text).casefold()
+    if not body:
+        return None
+    for name in normalize_subject_names(muted_subjects):
+        if name.casefold() in body:
+            return name
     return None
 
 
